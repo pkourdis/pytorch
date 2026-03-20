@@ -6068,7 +6068,8 @@ def get_gpu_name(vendor: str, device_id: int = 0) -> str | None:
         tool = "nvidia-smi"
         cmd = [tool, "--query-gpu=name", "--format=csv,noheader", "-i", str(device_id)]
     else:
-        warnings.warn(f"Unsupported vendor {vendor!r} to get the GPU name; returning None. Expected 'intel' or 'nvidia'.")
+        warnings.warn(f"Unsupported vendor {vendor!r} to get the GPU name; returning None. "
+                      f"Expected 'intel' or 'nvidia'.", stacklevel=2)
         return None
 
     try:
@@ -6091,13 +6092,13 @@ def get_gpu_name(vendor: str, device_id: int = 0) -> str | None:
         gpu_name = None if gpu_name == "" else gpu_name
 
         if gpu_name is None:
-            warnings.warn(f"{tool} returned an empty GPU name for device_id={device_id}.")
+            warnings.warn(f"{tool} returned an empty GPU name for device_id={device_id}.", stacklevel=2)
         return gpu_name
 
     except FileNotFoundError:
         warnings.warn(f"{tool} not found in PATH so returning None. "
-                      f"Is it installed and available in your environment?")
+                      f"Is it installed and available in your environment?", stacklevel=2)
         return None
     except subprocess.CalledProcessError as e:
-        warnings.warn(f"{tool} error for device_id={device_id} so returning None: {e.stderr}.")
+        warnings.warn(f"{tool} error for device_id={device_id} so returning None: {e.stderr}.", stacklevel=2)
         return None
