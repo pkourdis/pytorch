@@ -3097,6 +3097,65 @@ class TestMemPool(TestCase):
         self.assertTrue(after_pool_release < peak_reserved)
         self.assertTrue(after_pool_release > 0)
 
+    def test_mempool_with_custom_allocator(self):
+        """Test that custom XPU allocators can be used with MemPool.
+
+        This test verifies the fix for XPUPluggableAllocator type registration,
+        ensuring that pybind11 can properly convert the allocator when passed
+        to MemPool constructor. This mirrors how torchcomms uses custom allocators.
+        """
+        torch.xpu.init()
+
+        # Create a simple custom allocator using inline C++ extension
+        from torch.utils.cpp_extension import load_inline
+
+        custom_allocator_source = """
+        #include <torch/extension.h>
+        #include <c10/xpu/XPUFunctions.h>
+
+        extern "C" {
+          C10_EXPORT void* test_alloc(size_t size, int device, sycl::queue* queue) {
+            auto& sycl_device = c10::xpu::get_raw_device(device);
+            auto& sycl_context = c10::xpu::get_device_context();
+            void* ptr = sycl::malloc_shared(size, sycl_device, sycl_context);
+            return ptr;
+          }
+
+          C10_EXPORT void test_free(void* ptr, size_t size, int device, sycl::queue* queue) {
+            sycl::free(ptr, c10::xpu::get_device_context());
+          }
+        }
+        """
+
+        custom_allocator_lib = load_inline(
+            name="test_mempool_allocator",
+            cpp_sources=custom_allocator_source,
+            is_python_module=False,
+            keep_intermediates=False,
+            with_sycl=True,
+        )
+
+        # Create XPUPluggableAllocator - this returns c10::xpu::XPUCachingAllocator::XPUAllocator
+        allocator = torch.xpu.memory.XPUPluggableAllocator(
+            custom_allocator_lib,
+            "test_alloc",
+            "test_free",
+        )
+
+        # This should not raise "Unregistered type" error
+        # The fix adds proper pybind11 type registration for XPUPluggableAllocator
+        pool = torch.xpu.MemPool(allocator.allocator())
+
+        # Verify the pool can be used for allocation
+        with torch.xpu.use_mem_pool(pool):
+            tensor = torch.randn(100, 100, device="xpu")
+            self.assertEqual(tensor.device.type, "xpu")
+            self.assertEqual(tensor.shape, (100, 100))
+
+        # Cleanup
+        del tensor
+        del pool
+
 
 instantiate_parametrized_tests(TestXpu)
 instantiate_parametrized_tests(TestCachingHostAllocatorXpuGraph)
