@@ -3102,7 +3102,7 @@ class TestMemPool(TestCase):
 
         This test verifies the fix for XPUPluggableAllocator type registration,
         ensuring that pybind11 can properly convert the allocator when passed
-        to MemPool constructor. This mirrors how torchcomms uses custom allocators.
+        to MemPool constructor.
         """
         torch.xpu.init()
 
@@ -3146,14 +3146,58 @@ class TestMemPool(TestCase):
         # The fix adds proper pybind11 type registration for XPUPluggableAllocator
         pool = torch.xpu.MemPool(allocator.allocator())
 
+        torch.xpu.synchronize()
+        torch.xpu.empty_cache()
+        initial_allocated = torch.xpu.memory_allocated()
+
         # Verify the pool can be used for allocation
         with torch.xpu.use_mem_pool(pool):
-            tensor = torch.randn(100, 100, device="xpu")
-            self.assertEqual(tensor.device.type, "xpu")
-            self.assertEqual(tensor.shape, (100, 100))
+            t1 = torch.randn(100, 100, device="xpu")
 
-        # Cleanup
-        del tensor
+            self.assertEqual(t1.device.type, "xpu")
+            self.assertEqual(t1.shape, (100, 100))
+
+            ptr = t1.data_ptr()
+            self.assertNotEqual(ptr, 0)
+
+            # Memory allocated should increase after allocation
+            allocated_during = torch.xpu.memory_allocated()
+            self.assertTrue(allocated_during > initial_allocated)
+
+            del t1
+
+            t2 = torch.randn(100, 100, device="xpu")
+
+            self.assertEqual(t2.device.type, "xpu")
+            self.assertEqual(t2.shape, (100, 100))
+
+            ptr2 = t2.data_ptr()
+            self.assertNotEqual(ptr2, 0)
+
+            # Should reuse the same memory from the pool since t1 was deleted
+            # and we are using the same pool
+            self.assertEqual(ptr, ptr2)
+
+            del t2
+
+            # Test with zero-size tensor
+            empty = torch.tensor([], device="xpu")
+            self.assertEqual(empty.numel(), 0)
+
+            del empty
+
+        # Test pool survives exceptions
+        try:
+            with torch.xpu.use_mem_pool(pool):
+                raise RuntimeError("test error")
+        except RuntimeError:
+            pass
+
+        # Pool should still work
+        with torch.xpu.use_mem_pool(pool):
+            tensor = torch.randn(10, device="xpu")
+            self.assertIsNotNone(tensor)
+
         del pool
 
 
