@@ -9342,10 +9342,11 @@ def with_effects(token, op, *args, **kwargs):
     # An effectful op may retain its tensor inputs in state that inductor cannot
     # see (e.g. pushing a tensor onto a torchbind queue), so those input buffers
     # must outlive the op and must never be reused for another buffer.
-    for arg in pytree.tree_leaves((args, kwargs)):
-        if isinstance(arg, TensorBox):
-            arg.realize()
-            V.graph.never_reuse_buffers.add(arg.get_name())
+    if effect_type:
+        for arg in pytree.tree_leaves((args, kwargs)):
+            if isinstance(arg, TensorBox):
+                arg.realize()
+                V.graph.never_reuse_buffers.add(arg.get_name())
 
     # Track operations before
     operation_len = len(V.graph.operations)
