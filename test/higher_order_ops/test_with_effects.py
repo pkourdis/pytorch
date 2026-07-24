@@ -309,8 +309,12 @@ def forward(self, arg0_1, arg1_1, arg2_1):
             lib.impl("op_a", lambda x: None, "Meta")
             lib.impl("op_b", lambda x: x + 1, "CompositeExplicitAutograd")
             lib.impl("op_b", lambda x: torch.empty_like(x), "Meta")
-            torch.library._register_effectful_op("mylib::op_a", _EffectType.ORDERED)
-            torch.library._register_effectful_op("mylib::op_b", _EffectType.ORDERED)
+            torch.library._register_effectful_op(
+                "mylib::op_a", _EffectType.ORDERED, lib=lib
+            )
+            torch.library._register_effectful_op(
+                "mylib::op_b", _EffectType.ORDERED, lib=lib
+            )
 
             op_b = torch.ops.mylib.op_b.default
 
