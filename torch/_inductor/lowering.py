@@ -9341,7 +9341,17 @@ def with_effects(token, op, *args, **kwargs):
 
     # An effectful op may retain its tensor inputs in state that inductor cannot
     # see (e.g. pushing a tensor onto a torchbind queue), so those input buffers
-    # must outlive the op and must never be reused for another buffer.
+    # must outlive the op and never be reused for another buffer. We pin the
+    # inputs of every ORDERED op intentionally rather than only those that can
+    # actually retain them: some (aten::_print, aten::_linalg_check_errors) don't,
+    # so this slightly over-pins. There is no reliable "retains inputs" signal to
+    # scope this to: retention happens inside the op's implementation, so it is
+    # not exposed by the schema (even queue_push, which stashes its input, reports
+    # alias_info=None), the EffectType enum only encodes ordering, and a
+    # ScriptObject argument merely triggers the default effect (effects can be
+    # registered manually on any op, so it is neither necessary nor precise).
+    # Under-pinning would silently miscompile by recycling a buffer the op still
+    # holds, so the bounded over-pinning is the intended tradeoff for correctness.
     if effect_type:
         for arg in pytree.tree_leaves((args, kwargs)):
             if isinstance(arg, TensorBox):
