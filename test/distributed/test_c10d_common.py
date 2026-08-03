@@ -395,6 +395,33 @@ class BackendEntryPointTest(TestCase):
             dist.ProcessGroup.BackendType.NCCL,
         )
 
+    @parametrize("xccl2_override", [None, "0", "1"])
+    def test_xccl_backend_registration(self, xccl2_override):
+        def register_default():
+            with unittest.mock.patch.dict(os.environ):
+                os.environ.pop("TORCH_DIST_USE_XCCL2", None)
+                c10d._register_builtin_xccl_backend()
+
+        self.addCleanup(register_default)
+        with unittest.mock.patch.dict(os.environ):
+            if xccl2_override is None:
+                os.environ.pop("TORCH_DIST_USE_XCCL2", None)
+            else:
+                os.environ["TORCH_DIST_USE_XCCL2"] = xccl2_override
+            c10d._register_builtin_xccl_backend()
+
+        use_xccl2 = xccl2_override == "1"
+        self.assertIs(
+            dist.Backend._plugins["XCCL"].creator_fn,
+            c10d._create_xccl2_process_group
+            if use_xccl2
+            else c10d._create_xccl_process_group,
+        )
+        # Legacy XCCL records itself; xccl2 needs the flight recorder hook.
+        self.assertEqual(
+            dist.Backend.XCCL in c10d._FR_SELF_RECORDING_BACKENDS, not use_xccl2
+        )
+
     def test_nccl2_device_uses_rank_without_local_rank(self):
         opts = c10d._DistributedBackendOptions()
         opts.enable_reconfigure = False
@@ -422,6 +449,20 @@ class BackendEntryPointTest(TestCase):
             dist.Backend.backend_type_map["nccl-legacy"],
             dist.ProcessGroup.BackendType.CUSTOM,
         )
+
+    def test_xccl_legacy_backend_registration(self):
+        c10d._register_builtin_xccl_legacy_backend()
+
+        self.assertIs(
+            dist.Backend._plugins["XCCL-LEGACY"].creator_fn,
+            c10d._create_xccl_process_group,
+        )
+        self.assertEqual(dist.Backend.backend_capability["xccl-legacy"], ["xpu"])
+        self.assertEqual(
+            dist.Backend.backend_type_map["xccl-legacy"],
+            dist.ProcessGroup.BackendType.CUSTOM,
+        )
+        self.assertIn("xccl-legacy", c10d._FR_SELF_RECORDING_BACKENDS)
 
 
 instantiate_parametrized_tests(BackendEntryPointTest)

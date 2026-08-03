@@ -499,6 +499,15 @@ try:
 except ImportError:
     _XCCL_AVAILABLE = False
 
+try:
+    # In-tree XCCL backend (selected via the "xccl2" backend / entry point).
+    from torch._C._distributed_c10d import ProcessGroupXCCL2
+
+    ProcessGroupXCCL2.__module__ = "torch.distributed.distributed_c10d"
+    __all__ += ["ProcessGroupXCCL2"]
+except ImportError:
+    pass
+
 
 if TYPE_CHECKING:
     from torch._C._distributed_c10d import (  # noqa: TC004
@@ -509,6 +518,7 @@ if TYPE_CHECKING:
         ProcessGroupNCCL2,
         ProcessGroupUCC,
         ProcessGroupXCCL,
+        ProcessGroupXCCL2,
     )
 
 logger = logging.getLogger(__name__)
@@ -948,6 +958,33 @@ def _create_xccl_process_group(
     return backend_class
 
 
+def _create_xccl2_process_group(
+    opts: _DistributedBackendOptions, backend_options: object | None
+) -> C10DBackend:
+    if not is_xccl_available():
+        raise RuntimeError("Distributed package doesn't have XCCL built in")
+    if backend_options is None:
+        pg_options = ProcessGroupXCCL2.Options()
+    elif isinstance(backend_options, ProcessGroupXCCL2.Options):
+        pg_options = backend_options
+    else:
+        raise AssertionError(
+            "Expected backend_options argument to be of type ProcessGroupXCCL2.Options"
+        )
+    pg_options.global_ranks_in_group = opts.global_ranks_in_group
+    pg_options.group_name = opts.group_id
+    pg_options.group_desc = opts.group_desc
+    # pyrefly: ignore [bad-argument-type]
+    pg_options._timeout = opts.timeout
+    if opts.split_from:
+        if not isinstance(opts.split_from, ProcessGroupXCCL2):
+            raise AssertionError("Expected split_from to be ProcessGroupXCCL2")
+        return opts.split_from.split(  # pyrefly: ignore[missing-attribute]
+            opts.store, opts.global_ranks_in_group, pg_options
+        )
+    return ProcessGroupXCCL2(opts.store, opts.group_rank, opts.group_size, pg_options)
+
+
 def _register_builtin_mpi_backend() -> None:
     Backend.register_backend(
         Backend.MPI,
@@ -1045,12 +1082,43 @@ def _register_builtin_ucc_backend() -> None:
 
 
 def _register_builtin_xccl_backend() -> None:
+    creator_fn = (
+        _create_xccl2_process_group
+        if os.environ.get("TORCH_DIST_USE_XCCL2") == "1"
+        else _create_xccl_process_group
+    )
+    # Stock ProcessGroupXCCL feeds a FlightRecorder itself, xccl2 needs the
+    # hook; see _register_builtin_nccl_backend.
+    if creator_fn is _create_xccl_process_group:
+        _FR_SELF_RECORDING_BACKENDS.add(Backend.XCCL)
+    else:
+        _FR_SELF_RECORDING_BACKENDS.discard(Backend.XCCL)
     Backend.register_backend(
         Backend.XCCL,
-        _create_xccl_process_group,
+        creator_fn,
         extended_api=True,
         devices=Backend.backend_capability[Backend.XCCL],
         _backend_type=ProcessGroup.BackendType.XCCL,
+    )
+
+
+def _register_builtin_xccl_legacy_backend() -> None:
+    Backend.register_backend(
+        "xccl-legacy",
+        _create_xccl_process_group,
+        extended_api=True,
+        devices=["xpu"],
+        _backend_type=ProcessGroup.BackendType.CUSTOM,
+    )
+
+
+def _register_builtin_xccl2_backend() -> None:
+    Backend.register_backend(
+        "xccl2",
+        _create_xccl2_process_group,
+        extended_api=True,
+        devices=["xpu"],
+        _backend_type=ProcessGroup.BackendType.CUSTOM,
     )
 
 
@@ -2893,17 +2961,17 @@ def _get_backend_name_for_device(
 # Backends that feed a FlightRecorder without any help: ProcessGroupGloo
 # unconditionally, ProcessGroupNCCL and ProcessGroupXCCL through their own
 # integrations. "fake" and "undefined" never communicate, so recording them is
-# pure noise. Everything else -- nccl2, nccl-lazy, mpi, ucc, out-of-tree
+# pure noise. Everything else -- nccl2, nccl-lazy, xccl2, mpi, ucc, out-of-tree
 # plugins -- is invisible to the flight recorder unless a hook is attached.
 #
-# Backend.NCCL is not in here by construction: which implementation the name
-# builds is a runtime choice, so its registrar puts it in or takes it out when
-# it makes that choice, and this stays the single answer to "does this backend
-# record itself".
+# Backend.NCCL and Backend.XCCL are not in here by construction: which
+# implementation each name builds is a runtime choice, so its registrar puts it
+# in or takes it out when it makes that choice, and this stays the single
+# answer to "does this backend record itself".
 _FR_SELF_RECORDING_BACKENDS = {
     Backend.GLOO,
     "nccl-legacy",
-    Backend.XCCL,
+    "xccl-legacy",
     Backend.FAKE,
     Backend.UNDEFINED,
 }

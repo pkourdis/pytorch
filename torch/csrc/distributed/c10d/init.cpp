@@ -32,6 +32,7 @@
 
 #ifdef USE_C10D_XCCL
 #include <torch/csrc/distributed/c10d/ProcessGroupXCCL.hpp>
+#include <torch/csrc/distributed/c10d/xccl2/ProcessGroupXCCL.hpp>
 #endif
 
 #ifdef USE_C10D_NCCL
@@ -4627,6 +4628,71 @@ Returns:
       "_reset_fr_recording_xccl",
       []() { ::c10d::reset_xccl_trace(); },
       "API to reset Flight recorder recording when it comes to fault tolerance.");
+
+  auto processGroupXCCL2 =
+      intrusive_ptr_no_gil_destructor_class_<::c10d::xccl2::ProcessGroupXCCL>(
+          module, "ProcessGroupXCCL2", backend)
+          .def(
+              py::init(
+                  [](const c10::intrusive_ptr<::c10d::Store>& store,
+                     int rank,
+                     int size,
+                     c10::intrusive_ptr<
+                         ::c10d::xccl2::ProcessGroupXCCL::Options> options) {
+                    // gil_scoped_release is not safe as a call_guard in init.
+                    // https://github.com/pybind/pybind11/issues/5473
+                    py::gil_scoped_release nogil{};
+                    return c10::make_intrusive<::c10d::xccl2::ProcessGroupXCCL>(
+                        store, rank, size, std::move(options));
+                  }),
+              py::arg("store"),
+              py::arg("rank"),
+              py::arg("size"),
+              py::arg("options"),
+              R"(Create a new ProcessGroupXCCL2 instance.)")
+          .def(
+              py::init([](const c10::intrusive_ptr<::c10d::Store>& store,
+                          int rank,
+                          int size) {
+                py::gil_scoped_release nogil{};
+                auto options =
+                    ::c10d::xccl2::ProcessGroupXCCL::Options::create();
+                return c10::make_intrusive<::c10d::xccl2::ProcessGroupXCCL>(
+                    store, rank, size, options);
+              }),
+              py::arg("store"),
+              py::arg("rank"),
+              py::arg("size"),
+              R"(Create a new ProcessGroupXCCL2 instance.)")
+          .def(
+              "get_error",
+              &::c10d::xccl2::ProcessGroupXCCL::getError,
+              py::call_guard<py::gil_scoped_release>())
+          .def(
+              "perform_nocolor_split",
+              &::c10d::xccl2::ProcessGroupXCCL::performNocolorSplit,
+              py::call_guard<py::gil_scoped_release>())
+          .def_property_readonly(
+              "backend_version",
+              &::c10d::xccl2::ProcessGroupXCCL::getBackendVersion,
+              R"(Return the oneCCL library version, or "" if not yet bootstrapped.)")
+          .def_property_readonly(
+              "options",
+              &::c10d::xccl2::ProcessGroupXCCL::getBackendOptions,
+              R"(Return the options used to create this ProcessGroupXCCL2 instance.)");
+
+  // Unlike nccl2, which reuses core's ProcessGroupNCCL::Options, xccl2 carries
+  // its own options type and so binds it here.
+  intrusive_ptr_class_<::c10d::xccl2::ProcessGroupXCCL::Options>(
+      processGroupXCCL2, "Options", backendOptions)
+      .def(
+          py::init<bool, std::chrono::milliseconds>(),
+          py::arg("is_high_priority_stream") = false,
+          py::arg("timeout") = kBackendDefaultTimeout)
+      .def_readwrite(
+          "is_high_priority_stream",
+          &::c10d::xccl2::ProcessGroupXCCL::Options::is_high_priority_stream)
+      .def_readwrite("hints", &::c10d::xccl2::ProcessGroupXCCL::Options::hints);
 
 #endif
 

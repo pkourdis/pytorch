@@ -1254,9 +1254,18 @@ if(USE_XPU)
   list(APPEND Caffe2_XPU_SRCS ${TORCH_SRC_DIR}/csrc/xpu/XPUPluggableAllocator.cpp)
   list(APPEND Caffe2_XPU_SRCS ${TORCH_SRC_DIR}/csrc/inductor/aoti_torch/shim_xpu.cpp)
   list(APPEND Caffe2_XPU_SRCS ${TORCH_SRC_DIR}/csrc/inductor/aoti_runner/model_container_runner_xpu.cpp)
+  if(USE_C10D_XCCL)
+    append_filelist("libtorch_xpu_distributed_sources" Caffe2_XPU_SRCS)
+  endif()
   add_library(torch_xpu ${Caffe2_XPU_SRCS})
   torch_compile_options(torch_xpu)  # see cmake/public/utils.cmake
   target_compile_definitions(torch_xpu PRIVATE USE_XPU)
+  if(USE_C10D_XCCL)
+    # xccl2 calls the oneCCL C API directly, so torch_xpu needs the headers and
+    # libccl in its own right rather than through torch_xpu_ops. Keep this next
+    # to the sources above so the two cannot drift apart.
+    target_link_libraries(torch_xpu PRIVATE torch::xccl)
+  endif()
 
   # ATen XPU implementation
   set(TORCH_XPU_OPS_DIR ${TORCH_ROOT}/third_party/torch-xpu-ops)

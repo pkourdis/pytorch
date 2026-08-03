@@ -190,6 +190,14 @@ if(USE_XPU)
     list(APPEND TORCH_PYTHON_COMPILE_DEFINITIONS USE_XPU)
 endif()
 
+if(USE_C10D_XCCL)
+    # init.cpp binds c10d::xccl2::ProcessGroupXCCL, whose header pulls in
+    # <oneapi/ccl.h>. torch_python does not link torch::xccl, so without this
+    # it only compiles when oneAPI's setvars.sh has put oneCCL on CPATH.
+    list(APPEND TORCH_PYTHON_COMPILE_DEFINITIONS USE_C10D_XCCL)
+    list(APPEND TORCH_PYTHON_INCLUDE_DIRECTORIES ${XCCL_INCLUDE_DIR})
+endif()
+
 if(USE_CUDNN OR USE_ROCM)
     list(APPEND TORCH_PYTHON_SRCS
       ${TORCH_SRC_DIR}/csrc/cuda/shared/cudnn.cpp

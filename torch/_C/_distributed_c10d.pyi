@@ -1196,6 +1196,31 @@ class ProcessGroupXCCL(Backend):
     ) -> str: ...
     def _reset_fr_recording_xccl(self) -> None: ...
 
+class ProcessGroupXCCL2(Backend):
+    class Options(Backend.Options):
+        is_high_priority_stream: bool
+        hints: dict[str, str]
+
+        def __init__(
+            self,
+            is_high_priority_stream: bool = False,
+            timeout: timedelta = ...,
+        ): ...
+
+    def __init__(
+        self,
+        store: Store,
+        rank: int,
+        size: int,
+        options: Options,
+    ) -> None: ...
+    def get_error(self) -> ErrorType: ...
+    def perform_nocolor_split(self, device: torch.device) -> None: ...
+    @property
+    def backend_version(self) -> str: ...
+    @property
+    def options(self) -> Options: ...  # type: ignore[override]
+
 class ProcessGroupNCCL2(Backend):
     Options = ProcessGroupNCCL.Options
 
