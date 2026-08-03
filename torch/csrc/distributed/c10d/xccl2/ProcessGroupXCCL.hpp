@@ -157,6 +157,11 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
       std::vector<at::Tensor>& inputTensors,
       const ::c10d::AllgatherOptions& opts =
           ::c10d::AllgatherOptions()) override;
+  c10::intrusive_ptr<::c10d::Work> allgather_coalesced(
+      std::vector<std::vector<at::Tensor>>& outputTensorLists,
+      std::vector<at::Tensor>& inputTensors,
+      const ::c10d::AllgatherOptions& opts =
+          ::c10d::AllgatherOptions()) override;
   c10::intrusive_ptr<::c10d::Work> allgather_into_tensor_coalesced(
       std::vector<at::Tensor>& outputs,
       std::vector<at::Tensor>& inputs,
@@ -170,6 +175,10 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   c10::intrusive_ptr<::c10d::Work> gather(
       std::vector<std::vector<at::Tensor>>& outputTensors,
       std::vector<at::Tensor>& inputTensors,
+      const ::c10d::GatherOptions& opts = ::c10d::GatherOptions()) override;
+  c10::intrusive_ptr<::c10d::Work> gather_single(
+      at::Tensor& outputBuffer,
+      at::Tensor& inputBuffer,
       const ::c10d::GatherOptions& opts = ::c10d::GatherOptions()) override;
   c10::intrusive_ptr<::c10d::Work> scatter(
       std::vector<at::Tensor>& outputTensors,
@@ -220,9 +229,13 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   void setTimeout(std::chrono::milliseconds timeout) override;
   void setBoundDeviceId(std::optional<at::Device> device) override;
   void eagerConnectSingleDevice(at::Device device) override;
+  uint64_t getSequenceNumberForGroup() override {
+    return sequence_number_;
+  }
   void shutdown() override;
   void abort() override;
   ::c10d::ErrorType getError() override;
+  std::shared_ptr<c10::Allocator> getMemAllocator() override;
 
   bool supportsAbortHooks() const override {
     return true;
@@ -240,6 +253,8 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   }
 
   bool isInitialized() override;
+  // Join a parent-wide split as a rank outside the new group.
+  void performNocolorSplit(at::Device device);
 
   // ---- caching-allocator segment registration ----
   // Called by XCCLCachingAllocatorHook, possibly from an allocator thread, so
@@ -260,6 +275,11 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   }
   std::string_view getCommName() const {
     return name_;
+  }
+  // oneCCL library version (onecclGetVersion); empty until initXcclResources()
+  // reads it at bootstrap.
+  std::string_view getBackendVersion() const {
+    return backend_version_;
   }
   // Underlying host onecclComm_t as an opaque integer pointer.
   int64_t getCommPtr() const;
@@ -489,6 +509,7 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
 
   c10::intrusive_ptr<::c10d::Store> store_;
   uint64_t bootstrap_generation_{0};
+  uint64_t sequence_number_{0};
 
   std::shared_ptr<XcclApi> xccl_api_;
 
@@ -506,6 +527,7 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   bool is_high_priority_stream_{false};
   bool abort_process_on_timeout_or_error_{true};
   std::string name_;
+  std::string backend_version_;
 
   c10::intrusive_ptr<Options> options_c10d_;
 
