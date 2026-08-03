@@ -273,7 +273,10 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::createWork(
     c10::xpu::XPUStream stream,
     std::chrono::milliseconds timeout,
     const std::vector<at::Tensor>& inputTensors) {
-  return c10::make_intrusive<WorkXCCL>(this, stream, timeout, inputTensors);
+  auto work =
+      c10::make_intrusive<WorkXCCL>(this, stream, timeout, inputTensors);
+  work->setSequenceNumber(sequence_number_);
+  return work;
 }
 
 c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::createWork(
@@ -281,7 +284,9 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::createWork(
     std::chrono::milliseconds timeout,
     const at::Tensor& inputTensor) {
   // Single-tensor overload to avoid vector allocation
-  return c10::make_intrusive<WorkXCCL>(this, stream, timeout, inputTensor);
+  auto work = c10::make_intrusive<WorkXCCL>(this, stream, timeout, inputTensor);
+  work->setSequenceNumber(sequence_number_);
+  return work;
 }
 
 void ProcessGroupXCCL::enqueueWork(
