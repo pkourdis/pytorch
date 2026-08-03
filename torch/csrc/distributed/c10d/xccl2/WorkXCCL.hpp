@@ -225,6 +225,11 @@ class WorkXCCL : public c10d::Work {
   std::vector<at::Tensor> outputs_;
   std::optional<at::RecordFunction> recordFunction_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
+
+  // Set by barrierImpl() for a synchronous barrier: synchronizeInternal() then
+  // also host-blocks on the current stream. The stock XPU backend blocks inside
+  // barrier() itself; here it happens on wait().
+  bool hostBlocking_{false};
 };
 
 class WorkXCCLQueue {
