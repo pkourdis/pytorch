@@ -936,6 +936,20 @@ libtorch_xpu_sources = libtorch_python_xpu_sources + [
     "torch/csrc/xpu/XPUPluggableAllocator.cpp",
 ]
 
+# The xccl2 c10d backend. Built into libtorch_xpu because it calls the oneCCL C
+# API and the XPU stream/event runtime directly; guarded by USE_C10D_XCCL.
+libtorch_xpu_distributed_sources = [
+    "torch/csrc/distributed/c10d/xccl2/TracingGuard.cpp",
+    "torch/csrc/distributed/c10d/xccl2/XcclApi.cpp",
+    "torch/csrc/distributed/c10d/xccl2/XCCLBootstrap.cpp",
+    "torch/csrc/distributed/c10d/xccl2/WorkXCCL.cpp",
+    "torch/csrc/distributed/c10d/xccl2/WorkXCCLQueue.cpp",
+    "torch/csrc/distributed/c10d/xccl2/ProcessGroupXCCL.cpp",
+    "torch/csrc/distributed/c10d/xccl2/ProcessGroupXCCLUtils.cpp",
+    "torch/csrc/distributed/c10d/xccl2/ProcessGroupXCCLBackend.cpp",
+    "torch/csrc/distributed/c10d/xccl2/XCCLCachingAllocatorHook.cpp",
+]
+
 libtorch_python_core_sources = [
     "torch/csrc/DataLoader.cpp",
     "torch/csrc/DeviceAccelerator.cpp",
