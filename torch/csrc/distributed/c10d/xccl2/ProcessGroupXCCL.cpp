@@ -12,6 +12,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include <ATen/Context.h>
 #include <c10/core/ScalarType.h>
 #include <c10/core/StreamGuard.h>
 #include <c10/xpu/XPUCachingAllocator.h>
@@ -282,6 +283,20 @@ void ProcessGroupXCCL::initFromComm(
                      << rank_;
 }
 
+void ProcessGroupXCCL::performNocolorSplit(at::Device device) {
+  checkInitialized();
+  TORCH_CHECK(
+      device == device_,
+      "ProcessGroupXCCL is bound to device ",
+      device_,
+      " but split was requested on ",
+      device);
+  auto opts = Options::create(options_c10d_->is_high_priority_stream);
+  opts->timeout = options_c10d_->timeout;
+  opts->hints = options_c10d_->hints;
+  split(store_, {}, opts);
+}
+
 c10::intrusive_ptr<::c10d::Backend> ProcessGroupXCCL::split(
     const c10::intrusive_ptr<::c10d::Store>& store,
     const std::vector<int>& ranks,
@@ -388,11 +403,6 @@ void ProcessGroupXCCL::initXcclResources() {
     dependency_event_.emplace();
   }
 
-  if (!barrier_buffer_) {
-    barrier_buffer_ =
-        c10::xpu::XPUCachingAllocator::get()->allocate(sizeof(float));
-  }
-
   XCCL_CHECK(
       xccl_api_,
       xccl_api_->commUserRank(xccl_comm_, &rank_),
@@ -404,6 +414,7 @@ void ProcessGroupXCCL::initXcclResources() {
       "XCCL commCount failed");
 
   xccl_api_->setVersionInfo();
+  backend_version_ = std::to_string(xccl_api_->getVersion());
   TC_LOG(INFO, this) << "XCCL Version: " << xccl_api_->getVersion()
                      << " (Major: " << xccl_api_->getMajorVersion()
                      << " Minor: " << xccl_api_->getMinorVersion()
@@ -1582,11 +1593,26 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::barrierImpl(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
+  // Allocated here rather than in initXcclResources() so that merely creating a
+  // process group never touches the XPU caching allocator, which is brought up
+  // lazily and may not be initialized yet under eager init.
+  if (!barrier_buffer_) {
+    at::globalContext().lazyInitDevice(c10::DeviceType::XPU);
+    c10::OptionalDeviceGuard deviceGuard(device_);
+    barrier_buffer_ =
+        c10::xpu::XPUCachingAllocator::get()->allocate(sizeof(float));
+  }
+
   TracingGuard tracingGuard(
       name_, comm_size_, "barrier", rank_, sequence_number_);
 
   c10::xpu::XPUStream stream = getOperationStream(async_op);
   auto work = createWork(stream, timeout);
+
+  // A synchronous barrier host-blocks in synchronizeInternal() on wait(), where
+  // the stock XPU backend blocks inside barrier(); async barriers stay
+  // stream-ordered.
+  work->hostBlocking_ = !async_op;
 
   work->recordStart("barrier");
 
