@@ -86,7 +86,7 @@ std::pair<T, ::c10d::ReduceOp> getMaybeScaledInputsAndNewOp(
       return {
           std::move(scaled_inputs), ::c10d::ReduceOp(::c10d::ReduceOp::SUM)};
     } else {
-      throw std::runtime_error("Unsupported type for PREMUL_SUM scaling");
+      TORCH_CHECK(false, "Unsupported type for PREMUL_SUM scaling");
     }
   } else if (op == ::c10d::ReduceOp::AVG) {
     return {input, ::c10d::ReduceOp(::c10d::ReduceOp::SUM)};
@@ -109,19 +109,15 @@ at::Tensor createFlattenedTensor(
     const std::vector<at::Tensor>& tensors,
     c10::xpu::XPUStream stream,
     bool copy_data = false) {
-  if (tensors.empty()) [[unlikely]] {
-    throw std::runtime_error("tensors list is empty");
-  }
+  TORCH_CHECK(!tensors.empty(), "tensors list is empty");
   const auto numel = tensors[0].numel();
   const auto sizes = tensors[0].sizes();
   for (const auto& tensor : tensors) {
-    if (tensor.numel() != numel) [[unlikely]] {
-      throw std::runtime_error(
-          "All tensors must have the same number of elements");
-    }
-    if (tensor.sizes() != sizes) [[unlikely]] {
-      throw std::runtime_error("All tensors must have the same shape");
-    }
+    TORCH_CHECK(
+        tensor.numel() == numel,
+        "All tensors must have the same number of elements");
+    TORCH_CHECK(
+        tensor.sizes() == sizes, "All tensors must have the same shape");
   }
 
   c10::StreamGuard guard(stream);
@@ -144,21 +140,16 @@ void copyFlattenedTensorToTensors(
     const at::Tensor& flattened_tensor,
     const std::vector<at::Tensor>& tensors,
     c10::xpu::XPUStream stream) {
-  if (tensors.empty()) [[unlikely]] {
-    throw std::runtime_error("tensors list is empty");
-  }
+  TORCH_CHECK(!tensors.empty(), "tensors list is empty");
   const auto numel = tensors[0].numel();
   for (const auto& tensor : tensors) {
-    if (tensor.numel() != numel) [[unlikely]] {
-      throw std::runtime_error(
-          "All tensors must have the same number of elements");
-    }
+    TORCH_CHECK(
+        tensor.numel() == numel,
+        "All tensors must have the same number of elements");
   }
-  if (static_cast<size_t>(flattened_tensor.numel()) != tensors.size() * numel)
-      [[unlikely]] {
-    throw std::runtime_error(
-        "Flattened tensor size does not match the total number of elements in tensors");
-  }
+  TORCH_CHECK(
+      static_cast<size_t>(flattened_tensor.numel()) == tensors.size() * numel,
+      "Flattened tensor size does not match the total number of elements in tensors");
 
   c10::StreamGuard guard(stream);
   for (size_t i = 0; i < tensors.size(); ++i) {
@@ -232,11 +223,12 @@ void ProcessGroupXCCL::init(at::Device device) {
   TC_LOG(INFO, this) << "Initializing ProcessGroupXCCL for device: " << device;
   device_ = device;
 
-  if (init_state_ == InitializationState::INITIALIZED) {
-    throw std::runtime_error("ProcessGroupXCCL already initialized");
-  } else if (init_state_ == InitializationState::FINALIZED) {
-    throw std::runtime_error("ProcessGroupXCCL already finalized");
-  }
+  TORCH_CHECK(
+      init_state_ != InitializationState::INITIALIZED,
+      "ProcessGroupXCCL already initialized");
+  TORCH_CHECK(
+      init_state_ != InitializationState::FINALIZED,
+      "ProcessGroupXCCL already finalized");
 
   if (!xccl_api_) {
     xccl_api_ = std::make_shared<DefaultXcclApi>();
@@ -273,10 +265,9 @@ void ProcessGroupXCCL::initFromComm(
     onecclComm_t comm,
     at::Device device,
     std::shared_ptr<XcclApi> xccl_api) {
-  if (init_state_ != InitializationState::UNINITIALIZED) {
-    throw std::runtime_error(
-        "ProcessGroupXCCL already initialized or finalized");
-  }
+  TORCH_CHECK(
+      init_state_ == InitializationState::UNINITIALIZED,
+      "ProcessGroupXCCL already initialized or finalized");
 
   xccl_api_ = std::move(xccl_api);
   xccl_comm_ = comm;
@@ -443,7 +434,8 @@ void ProcessGroupXCCL::initXcclResources() {
     runAbortHooks();
     ::abort();
   }
-  throw xcclException;
+  // @allow-raw-throw: built before abortXcclComm() so it can be thrown after
+  throw std::move(xcclException);
 }
 
 void ProcessGroupXCCL::abort() {
@@ -463,11 +455,12 @@ void ProcessGroupXCCL::abort() {
 }
 
 void ProcessGroupXCCL::finalize() {
-  if (init_state_ == InitializationState::UNINITIALIZED) {
-    throw std::runtime_error("ProcessGroupXCCL not initialized");
-  } else if (init_state_ == InitializationState::FINALIZED) {
-    throw std::runtime_error("ProcessGroupXCCL already finalized");
-  }
+  TORCH_CHECK(
+      init_state_ != InitializationState::UNINITIALIZED,
+      "ProcessGroupXCCL not initialized");
+  TORCH_CHECK(
+      init_state_ != InitializationState::FINALIZED,
+      "ProcessGroupXCCL already finalized");
   init_state_ = InitializationState::FINALIZED;
 
   // Drop the caching-allocator registrations first: the hook holds a raw
@@ -493,19 +486,18 @@ void ProcessGroupXCCL::finalize() {
 
   if (comm_state_ == CommState::TIMEOUT) {
     abortXcclComm();
-    throw std::runtime_error("Work timed out during finalize");
+    TORCH_CHECK(false, "Work timed out during finalize");
   }
 
-  if (work_status == WorkXCCL::WorkStatus::NOT_STARTED ||
-      work_status == WorkXCCL::WorkStatus::INPROGRESS) {
-    throw std::runtime_error(
-        "WorkQ finalize returned in progress or not started state");
-  }
+  TORCH_CHECK(
+      work_status != WorkXCCL::WorkStatus::NOT_STARTED &&
+          work_status != WorkXCCL::WorkStatus::INPROGRESS,
+      "WorkQ finalize returned in progress or not started state");
 
   if (work_status == WorkXCCL::WorkStatus::TIMEDOUT) {
     comm_state_ = CommState::TIMEOUT;
     abortXcclComm();
-    throw std::runtime_error("Work timed out during finalize");
+    TORCH_CHECK(false, "Work timed out during finalize");
   } else if (work_status == WorkXCCL::WorkStatus::ERROR) {
     comm_state_ = CommState::ERROR;
     throwAsyncError(true);
@@ -554,11 +546,10 @@ int64_t ProcessGroupXCCL::getCommPtr() const {
 }
 
 void ProcessGroupXCCL::checkTensorDevice(const at::Tensor& tensor) const {
-  if (tensor.device() != device_) {
-    throw std::runtime_error(
-        "Tensor is on device " + tensor.device().str() +
-        " but this ProcessGroupXCCL is bound to device " + device_.str());
-  }
+  TORCH_CHECK(
+      tensor.device() == device_,
+      "Tensor is on device " + tensor.device().str() +
+          " but this ProcessGroupXCCL is bound to device " + device_.str());
 }
 
 void ProcessGroupXCCL::checkTensorsDevice(
@@ -666,9 +657,7 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::batch_op_issue(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  if (ops.empty()) [[unlikely]] {
-    throw std::runtime_error("Cannot issue empty batch operation");
-  }
+  TORCH_CHECK(!ops.empty(), "Cannot issue empty batch operation");
 
   std::vector<at::Tensor> input_tensors;
   std::vector<at::Tensor> output_tensors;
@@ -681,7 +670,7 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::batch_op_issue(
     } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
       output_tensors.push_back(op.tensor);
     } else {
-      throw std::runtime_error("Unknown op type in batch_op_issue");
+      TORCH_CHECK(false, "Unknown op type in batch_op_issue");
     }
   }
 
