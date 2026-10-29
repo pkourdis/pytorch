@@ -51,11 +51,10 @@ onecclDataType_t getXcclDataTypeInternal(const at::Tensor& tensor) {
     case at::ScalarType::Char:
       return onecclInt8;
     case at::ScalarType::Byte:
-      return onecclUint8;
     case at::ScalarType::Bool:
       return onecclUint8;
     default:
-      throw std::runtime_error("Unsupported tensor data type for XCCL");
+      TORCH_CHECK(false, "Unsupported tensor data type for XCCL");
   }
 }
 
@@ -116,8 +115,8 @@ ProcessGroupXCCL::RedOpRAII::RedOpRAII(
           &xcclRedOp_, factor, comm, xccl_api_.get());
       break;
     default:
-      throw std::runtime_error(
-          "PreMulSum Data type must be half, float, bfloat16 or double");
+      TORCH_CHECK(
+          false, "PreMulSum Data type must be half, float, bfloat16 or double");
   }
 }
 
@@ -173,13 +172,13 @@ ProcessGroupXCCL::RedOpRAII ProcessGroupXCCL::getXcclReduceOp(
     case ::c10d::ReduceOp::AVG:
       return onecclAvg;
     case ::c10d::ReduceOp::BAND:
-      throw std::runtime_error("Unsupported BAND reduce operation");
+      TORCH_CHECK(false, "Unsupported BAND reduce operation");
     case ::c10d::ReduceOp::BOR:
-      throw std::runtime_error("Unsupported BOR reduce operation");
+      TORCH_CHECK(false, "Unsupported BOR reduce operation");
     case ::c10d::ReduceOp::BXOR:
-      throw std::runtime_error("Unsupported BXOR reduce operation");
+      TORCH_CHECK(false, "Unsupported BXOR reduce operation");
     default:
-      throw std::runtime_error("Unsupported reduce operation");
+      TORCH_CHECK(false, "Unsupported reduce operation");
   }
 }
 
@@ -246,9 +245,9 @@ void ProcessGroupXCCL::timeoutWatchdog() noexcept {
 }
 
 void ProcessGroupXCCL::checkInitialized() const {
-  if (init_state_ != InitializationState::INITIALIZED) {
-    throw std::runtime_error("ProcessGroupXCCL not initialized");
-  }
+  TORCH_CHECK(
+      init_state_ == InitializationState::INITIALIZED,
+      "ProcessGroupXCCL not initialized");
 }
 
 void ProcessGroupXCCL::checkAndAbortIfTimedOutOrError() {
@@ -263,7 +262,7 @@ void ProcessGroupXCCL::checkAndAbortIfTimedOutOrError() {
       runAbortHooks();
       ::abort();
     } else {
-      throw std::runtime_error("XCCL operation timed out");
+      TORCH_CHECK(false, "XCCL operation timed out");
     }
   } else if (comm_state_ == CommState::ERROR) {
     throwAsyncError(false);
@@ -294,21 +293,25 @@ void ProcessGroupXCCL::enqueueWork(
 c10::xpu::XPUStream ProcessGroupXCCL::getOperationStream(bool async_op) {
   if (async_op) {
     auto current_stream = c10::xpu::getCurrentXPUStream(device_.index());
+    TORCH_CHECK(
+        dependency_event_.has_value() && internal_stream_.has_value(),
+        "XCCL stream resources are not initialized");
+    auto& dependency_event = dependency_event_.value();
+    const auto& internal_stream = internal_stream_.value();
 
     // Record event on current stream and wait for it on internal stream, so
     // the internal stream is ordered after whatever the caller queued.
-    dependency_event_->record(current_stream);
-    dependency_event_->block(internal_stream_.value());
+    dependency_event.record(current_stream);
+    dependency_event.block(internal_stream);
 
-    return internal_stream_.value();
+    return internal_stream;
   }
   return c10::xpu::getCurrentXPUStream(device_.index());
 }
 
 void ProcessGroupXCCL::ensureTensorContiguous(const at::Tensor& tensor) {
-  if (!tensor.is_contiguous()) {
-    throw std::runtime_error("Tensor must be contiguous for XCCL operations");
-  }
+  TORCH_CHECK(
+      tensor.is_contiguous(), "Tensor must be contiguous for XCCL operations");
 }
 
 void ProcessGroupXCCL::register_address(void* addr, size_t len) {
