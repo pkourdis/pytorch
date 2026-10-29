@@ -83,8 +83,8 @@ void XCCLCachingAllocatorHook::regDeregMem(
     return;
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  if (te.action_ == c10::CachingDeviceAllocator::TraceEntry::Action::
-                        SEGMENT_ALLOC) {
+  if (te.action_ ==
+      c10::CachingDeviceAllocator::TraceEntry::Action::SEGMENT_ALLOC) {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     void* addr = reinterpret_cast<void*>(static_cast<uintptr_t>(te.addr_));
     size_t len = te.size_;
