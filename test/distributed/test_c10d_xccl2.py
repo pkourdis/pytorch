@@ -62,6 +62,19 @@ class ProcessGroupXCCL2Test(MultiProcContinuousTest):
         expected = float(sum(range(1, self.world_size + 1)))
         self.assertEqual(t, torch.full((10,), expected, device=self.device))
 
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
+    def test_sync_collective_does_not_retain_output(self) -> None:
+        warmup = torch.ones(1, device=self.device)
+        dist.all_reduce(warmup)
+        torch.xpu.synchronize()
+        baseline = torch.xpu.memory_allocated(self.device)
+        for _ in range(3):
+            t = torch.ones(1 << 20, device=self.device)
+            dist.all_reduce(t)
+            torch.xpu.synchronize()
+            del t
+            self.assertLessEqual(torch.xpu.memory_allocated(self.device), baseline)
 
     @requires_xccl()
     @skip_if_lt_x_gpu(2)

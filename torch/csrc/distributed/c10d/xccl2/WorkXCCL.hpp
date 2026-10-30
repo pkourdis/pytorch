@@ -122,8 +122,10 @@ class WorkXCCL : public c10d::Work {
   }
 
   // Output tensors for result()/getFuture(). Set by the backend after issuing.
-  void setOutputs(std::vector<at::Tensor> outputs) {
-    outputs_ = std::move(outputs);
+  void setOutputs(std::vector<at::Tensor> outputs, bool asyncOp) {
+    if (asyncOp) {
+      outputs_ = std::move(outputs);
+    }
   }
   // A coalesced c10d op issues one work per tensor but must hand back a single
   // handle; the last work adopts the rest so that they outlive the call.

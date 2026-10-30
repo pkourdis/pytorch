@@ -67,12 +67,13 @@ class CompletedWork : public ::c10d::Work {
 
 c10::intrusive_ptr<WorkXCCL> coalesceWorks(
     std::vector<c10::intrusive_ptr<WorkXCCL>> works,
-    std::vector<at::Tensor> outputs) {
+    std::vector<at::Tensor> outputs,
+    bool asyncOp) {
   TORCH_INTERNAL_ASSERT(!works.empty());
   auto work = std::move(works.back());
   works.pop_back();
   work->setChildren(std::move(works));
-  work->setOutputs(std::move(outputs));
+  work->setOutputs(std::move(outputs), asyncOp);
   return work;
 }
 
@@ -270,7 +271,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::broadcast(
       static_cast<int>(opts.rootRank),
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(tensors);
+  work->setOutputs(tensors, opts.asyncOp);
   return work;
 }
 
@@ -291,7 +292,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::allreduce(
   ++sequence_number_;
   auto work = all_reduce(
       tensor, opts.reduceOp, opts.asyncOp, operationTimeout(opts.timeout));
-  work->setOutputs(tensors);
+  work->setOutputs(tensors, opts.asyncOp);
   return work;
 }
 
@@ -307,7 +308,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::allreduce_coalesced(
     works.push_back(all_reduce(
         tensor, opts.reduceOp, opts.asyncOp, operationTimeout(opts.timeout)));
   }
-  auto work = coalesceWorks(std::move(works), tensors);
+  auto work = coalesceWorks(std::move(works), tensors, opts.asyncOp);
   if (coalescing_batch_) {
     coalesced_work_ = work;
   }
@@ -335,7 +336,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::reduce(
       opts.reduceOp,
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(tensors);
+  work->setOutputs(tensors, opts.asyncOp);
   return work;
 }
 
@@ -363,7 +364,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::allgather(
       outputList[0].data_ptr() == outputList[1].data_ptr();
   if (!aliased) {
     auto work = all_gather(outputList, input, opts.asyncOp, timeout);
-    work->setOutputs(outputList);
+    work->setOutputs(outputList, opts.asyncOp);
     return work;
   }
 
@@ -373,7 +374,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::allgather(
       {static_cast<int64_t>(getSize()) * input.numel()},
       input.options().memory_format(at::MemoryFormat::Contiguous));
   auto work = allGatherSingleImpl(staging, input, opts.asyncOp, timeout);
-  work->setOutputs(outputList);
+  work->setOutputs(outputList, opts.asyncOp);
   auto rows = staging.view({getSize(), input.numel()});
   work->wait();
   for (int r = 0; r < getSize(); ++r) {
@@ -405,7 +406,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::allgather_coalesced(
         outputTensorLists.at(i).begin(),
         outputTensorLists.at(i).end());
   }
-  auto work = coalesceWorks(std::move(works), std::move(outputs));
+  auto work = coalesceWorks(std::move(works), std::move(outputs), opts.asyncOp);
   if (coalescing_batch_) {
     coalesced_work_ = work;
   }
@@ -431,7 +432,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::
         opts.asyncOp,
         operationTimeout(opts.timeout)));
   }
-  auto work = coalesceWorks(std::move(works), outputs);
+  auto work = coalesceWorks(std::move(works), outputs, opts.asyncOp);
   if (coalescing_batch_) {
     coalesced_work_ = work;
   }
@@ -446,7 +447,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::_allgather_base(
   ++sequence_number_;
   auto work = allGatherSingleImpl(
       outputBuffer, inputBuffer, opts.asyncOp, operationTimeout(opts.timeout));
-  work->setOutputs(std::vector<at::Tensor>{outputBuffer});
+  work->setOutputs(std::vector<at::Tensor>{outputBuffer}, opts.asyncOp);
   return work;
 }
 
@@ -470,7 +471,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::gather(
       static_cast<int>(opts.rootRank),
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(outputTensors.at(0));
+  work->setOutputs(outputTensors.at(0), opts.asyncOp);
   return work;
 }
 
@@ -509,7 +510,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::gather_single(
       static_cast<int>(opts.rootRank),
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(std::vector<at::Tensor>{outputBuffer});
+  work->setOutputs(std::vector<at::Tensor>{outputBuffer}, opts.asyncOp);
   return work;
 }
 
@@ -532,7 +533,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::scatter(
       static_cast<int>(opts.rootRank),
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(outputTensors);
+  work->setOutputs(outputTensors, opts.asyncOp);
   return work;
 }
 
@@ -551,7 +552,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::reduce_scatter(
       opts.reduceOp,
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(outputTensors);
+  work->setOutputs(outputTensors, opts.asyncOp);
   return work;
 }
 
@@ -575,7 +576,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::
         opts.asyncOp,
         operationTimeout(opts.timeout)));
   }
-  auto work = coalesceWorks(std::move(works), outputs);
+  auto work = coalesceWorks(std::move(works), outputs, opts.asyncOp);
   if (coalescing_batch_) {
     coalesced_work_ = work;
   }
@@ -594,7 +595,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::_reduce_scatter_base(
       opts.reduceOp,
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(std::vector<at::Tensor>{outputBuffer});
+  work->setOutputs(std::vector<at::Tensor>{outputBuffer}, opts.asyncOp);
   return work;
 }
 
@@ -612,7 +613,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::alltoall_base(
     c10d::checkSplitSizes(outputSplitSizes, outputBuffer, size_);
     auto work =
         allToAllSingleImpl(outputBuffer, inputBuffer, opts.asyncOp, timeout);
-    work->setOutputs(std::vector<at::Tensor>{outputBuffer});
+    work->setOutputs(std::vector<at::Tensor>{outputBuffer}, opts.asyncOp);
     return work;
   }
   auto work = all_to_all_v_single(
@@ -622,7 +623,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::alltoall_base(
       normalizeSplitSizes(inputSplitSizes, inputBuffer, size_),
       opts.asyncOp,
       timeout);
-  work->setOutputs(std::vector<at::Tensor>{outputBuffer});
+  work->setOutputs(std::vector<at::Tensor>{outputBuffer}, opts.asyncOp);
   return work;
 }
 
@@ -638,7 +639,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::alltoall(
       inputTensors,
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(outputTensors);
+  work->setOutputs(outputTensors, opts.asyncOp);
   return work;
 }
 
@@ -674,7 +675,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::send(
   }
   auto work = sendImpl(
       tensors.at(0), dstRank, /*async_op=*/true, options_c10d_->timeout);
-  work->setOutputs(tensors);
+  work->setOutputs(tensors, /*asyncOp=*/true);
   return work;
 }
 
@@ -690,7 +691,7 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::recv(
   }
   auto work = recvImpl(
       tensors.at(0), srcRank, /*async_op=*/true, options_c10d_->timeout);
-  work->setOutputs(tensors);
+  work->setOutputs(tensors, /*asyncOp=*/true);
   return work;
 }
 
