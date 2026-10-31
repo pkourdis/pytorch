@@ -462,6 +462,11 @@ class ProcessGroupXCCL2SplitTest(_ProcessGroupXCCL2OptionsTest):
         expected = float(sum(halves))
         self.assertEqual(t, torch.full_like(t, expected))
 
+        # ProcessGroup.split_group does not register into _world, so
+        # destroy_process_group cannot reach these groups.
+        grandchild.shutdown()
+        child.shutdown()
+
 
 _UNINITIALIZED_XPU_SCRIPT = """\
 import torch
