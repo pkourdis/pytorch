@@ -1115,6 +1115,7 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::reduce_scatter(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(output);
+  checkReduceOpDtype(output, op);
 
   TORCH_CHECK(
       input_list.size() == static_cast<size_t>(comm_size_),
@@ -1183,7 +1184,7 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::reduce_scatter(
           recv_ptr,
           input_tensor.numel(),
           dataType,
-          getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
+          getXcclReduceOp(maybe_new_op, xccl_comm_, input_tensor),
           i,
           xccl_comm_,
           stream);
@@ -1214,7 +1215,7 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::reduce_scatter(
             output.data_ptr(),
             output.numel(),
             dataType,
-            getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
+            getXcclReduceOp(maybe_new_op, xccl_comm_, output),
             xccl_comm_,
             stream),
         "XCCL reduceScatter failed in reduce_scatter");
@@ -1245,6 +1246,7 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::reduceScatterSingleImpl(
   checkTensorDevice(output);
   checkTensorDevice(input);
   checkSameDtype(input, output);
+  checkReduceOpDtype(output, op);
 
   TORCH_CHECK(
       input.numel() == output.numel() * comm_size_,
@@ -1277,7 +1279,7 @@ c10::intrusive_ptr<WorkXCCL> ProcessGroupXCCL::reduceScatterSingleImpl(
           output.data_ptr(),
           output.numel(),
           dataType,
-          getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
+          getXcclReduceOp(maybe_new_op, xccl_comm_, maybe_scaled_input),
           xccl_comm_,
           stream),
       "XCCL reduceScatter failed in reduceScatterSingleImpl");
