@@ -4766,22 +4766,26 @@ Returns:
       intrusive_ptr_no_gil_destructor_class_<::c10d::xccl2::ProcessGroupXCCL>(
           module, "ProcessGroupXCCL2", backend)
           .def(
-              py::init(
-                  [](const c10::intrusive_ptr<::c10d::Store>& store,
-                     int rank,
-                     int size,
-                     c10::intrusive_ptr<
-                         ::c10d::xccl2::ProcessGroupXCCL::Options> options) {
-                    // gil_scoped_release is not safe as a call_guard in init.
-                    // https://github.com/pybind/pybind11/issues/5473
-                    py::gil_scoped_release nogil{};
-                    return c10::make_intrusive<::c10d::xccl2::ProcessGroupXCCL>(
+              py::init([](const c10::intrusive_ptr<::c10d::Store>& store,
+                          int rank,
+                          int size,
+                          c10::intrusive_ptr<
+                              ::c10d::xccl2::ProcessGroupXCCL::Options> options,
+                          std::optional<at::Device> device_id) {
+                // gil_scoped_release is not safe as a call_guard in init.
+                // https://github.com/pybind/pybind11/issues/5473
+                py::gil_scoped_release nogil{};
+                auto backend =
+                    c10::make_intrusive<::c10d::xccl2::ProcessGroupXCCL>(
                         store, rank, size, std::move(options));
-                  }),
+                backend->setBoundDeviceId(device_id);
+                return backend;
+              }),
               py::arg("store"),
               py::arg("rank"),
               py::arg("size"),
               py::arg("options"),
+              py::arg("device_id") = std::nullopt,
               R"(Create a new ProcessGroupXCCL2 instance.)")
           .def(
               py::init([](const c10::intrusive_ptr<::c10d::Store>& store,
@@ -4790,8 +4794,11 @@ Returns:
                 py::gil_scoped_release nogil{};
                 auto options =
                     ::c10d::xccl2::ProcessGroupXCCL::Options::create();
-                return c10::make_intrusive<::c10d::xccl2::ProcessGroupXCCL>(
-                    store, rank, size, options);
+                auto backend =
+                    c10::make_intrusive<::c10d::xccl2::ProcessGroupXCCL>(
+                        store, rank, size, options);
+                backend->setBoundDeviceId(std::nullopt);
+                return backend;
               }),
               py::arg("store"),
               py::arg("rank"),
