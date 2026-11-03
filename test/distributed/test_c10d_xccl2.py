@@ -155,6 +155,20 @@ class ProcessGroupXCCL2Test(MultiProcContinuousTest):
 
     @requires_xccl()
     @skip_if_lt_x_gpu(2)
+    def test_send_recv_first_op_on_new_group(self) -> None:
+        # Only ranks 0 and 1 use the group, so its communicator must already
+        # exist: a lazy init on the first send would wait for the idle ranks.
+        pg = dist.new_group(backend="xccl2", timeout=timedelta(seconds=60))
+        t = torch.full((4,), float(self.rank), device=self.device)
+        if self.rank == 0:
+            dist.send(t, 1, group=pg)
+        elif self.rank == 1:
+            dist.recv(t, 0, group=pg)
+            self.assertEqual(t, torch.zeros_like(t))
+        dist.destroy_process_group(pg)
+
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
     def test_batch_isend_irecv(self) -> None:
         # Mixed batch on a single PG (the PP 1F1B pattern that needs coalescing).
         send_t = torch.full((1,), float(self.rank), device=self.device)
