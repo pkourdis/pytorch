@@ -966,6 +966,33 @@ def _create_xccl_process_group(
     return backend_class
 
 
+def _xccl2_device(opts: _DistributedBackendOptions) -> torch.device:
+    process_group = opts.process_group
+    device = process_group.bound_device_id if process_group is not None else None
+    if device is not None:
+        return device
+
+    device_count = torch.xpu.device_count()
+    if device_count == 0:
+        raise RuntimeError("xccl2 requires at least one XPU device")
+
+    if "LOCAL_RANK" in os.environ:
+        device_index = get_node_local_rank() % device_count
+    else:
+        global_rank = (
+            opts.global_ranks_in_group[opts.group_rank]
+            if opts.global_ranks_in_group
+            else opts.group_rank
+        )
+        device_index = global_rank % device_count
+
+    device = torch.device("xpu", device_index)
+    if process_group is not None:
+        process_group.bound_device_id = device
+
+    return device
+
+
 def _create_xccl2_process_group(
     opts: _DistributedBackendOptions, backend_options: object | None
 ) -> C10DBackend:
@@ -990,7 +1017,9 @@ def _create_xccl2_process_group(
         return opts.split_from.split(  # pyrefly: ignore[missing-attribute]
             opts.store, opts.global_ranks_in_group, pg_options
         )
-    return ProcessGroupXCCL2(opts.store, opts.group_rank, opts.group_size, pg_options)
+    return ProcessGroupXCCL2(
+        opts.store, opts.group_rank, opts.group_size, pg_options, _xccl2_device(opts)
+    )
 
 
 def _register_builtin_mpi_backend() -> None:
