@@ -172,11 +172,11 @@ ProcessGroupXCCL::RedOpRAII ProcessGroupXCCL::getXcclReduceOp(
     case ::c10d::ReduceOp::AVG:
       return onecclAvg;
     case ::c10d::ReduceOp::BAND:
-      TORCH_CHECK(false, "Unsupported BAND reduce operation");
+      C10_THROW_ERROR(ValueError, "Cannot use ReduceOp.BAND with XCCL");
     case ::c10d::ReduceOp::BOR:
-      TORCH_CHECK(false, "Unsupported BOR reduce operation");
+      C10_THROW_ERROR(ValueError, "Cannot use ReduceOp.BOR with XCCL");
     case ::c10d::ReduceOp::BXOR:
-      TORCH_CHECK(false, "Unsupported BXOR reduce operation");
+      C10_THROW_ERROR(ValueError, "Cannot use ReduceOp.BXOR with XCCL");
     default:
       TORCH_CHECK(false, "Unsupported reduce operation");
   }
