@@ -1,8 +1,8 @@
-// c10d::Backend surface for ProcessGroupXCCL: the constructor, lazy device
-// binding, and the virtual overrides. Each override unwraps the c10d
-// tensor-list shape and forwards the c10d option fields (c10d::ReduceOp,
-// rootRank, asyncOp, resolved timeout) directly to the internal XCCL engine
-// helpers, then tags the returned c10d::Work with its output tensors.
+// c10d::Backend surface for ProcessGroupXCCL: the constructor, device binding,
+// and the virtual overrides. Each override unwraps the c10d tensor-list shape
+// and forwards the c10d option fields (c10d::ReduceOp, rootRank, asyncOp,
+// resolved timeout) directly to the internal XCCL engine helpers, then tags the
+// returned c10d::Work with its output tensors.
 
 #ifdef USE_C10D_XCCL
 
@@ -146,7 +146,6 @@ void ProcessGroupXCCL::ensureInitialized(at::Device device) {
   TORCH_CHECK(
       init_state_ == InitializationState::UNINITIALIZED,
       "ProcessGroupXCCL has been finalized");
-  // Lazy one-time bootstrap on first use.
   init(device);
 }
 
@@ -160,8 +159,26 @@ void ProcessGroupXCCL::setTimeout(std::chrono::milliseconds timeout) {
   options_c10d_->timeout = timeout;
 }
 
+void ProcessGroupXCCL::setBoundDeviceId(std::optional<at::Device> device) {
+  if (!device.has_value() && init_state_ == InitializationState::INITIALIZED) {
+    device = device_;
+  }
+  if (!device.has_value()) {
+    const auto deviceCount = c10::xpu::device_count_ensure_non_zero();
+    uint64_t deviceRank = static_cast<uint64_t>(getRank());
+    const auto& globalRanks = options_c10d_->global_ranks_in_group;
+    if (static_cast<size_t>(getRank()) < globalRanks.size()) {
+      deviceRank = globalRanks[getRank()];
+    }
+    device = at::Device(
+        at::kXPU, static_cast<c10::DeviceIndex>(deviceRank % deviceCount));
+  }
+  Backend::setBoundDeviceId(device);
+  ensureInitialized(*device);
+}
+
 void ProcessGroupXCCL::eagerConnectSingleDevice(at::Device device) {
-  ensureInitialized(device);
+  setBoundDeviceId(device);
 }
 
 void ProcessGroupXCCL::runAbortHooks() {
