@@ -104,8 +104,8 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
     std::unordered_map<std::string, std::string> hints;
   };
 
-  // The communicator is bootstrapped lazily on first use (or via
-  // eagerConnectSingleDevice).
+  // Communicator initialization happens when c10d binds the backend to a
+  // device via setBoundDeviceId().
   ProcessGroupXCCL(
       c10::intrusive_ptr<::c10d::Store> store,
       int rank,
@@ -214,6 +214,7 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   c10::intrusive_ptr<::c10d::Work> endCoalescing() override;
 
   void setTimeout(std::chrono::milliseconds timeout) override;
+  void setBoundDeviceId(std::optional<at::Device> device) override;
   void eagerConnectSingleDevice(at::Device device) override;
   uint64_t getSequenceNumberForGroup() override {
     return sequence_number_;
