@@ -460,6 +460,15 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::_allgather_base(
     at::Tensor& outputBuffer,
     at::Tensor& inputBuffer,
     const ::c10d::AllgatherOptions& opts) {
+  if (inputBuffer.dtype() != outputBuffer.dtype()) {
+    C10_THROW_ERROR(
+        TypeError, "output tensor must have the same type as input tensor");
+  }
+  if (inputBuffer.numel() * getSize() != outputBuffer.numel()) {
+    C10_THROW_ERROR(
+        ValueError,
+        "output tensor size must be equal to world_size times input tensor size");
+  }
   ensureInitialized(inputBuffer.device());
   ++sequence_number_;
   auto work = allGatherSingleImpl(
@@ -472,23 +481,33 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::gather(
     std::vector<std::vector<at::Tensor>>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const ::c10d::GatherOptions& opts) {
+  static auto invalidArgument = [](const std::string& msg) {
+    C10_THROW_ERROR(ValueError, "ProcessGroupXCCL::gather: " + msg);
+  };
+
+  assertRootRank(invalidArgument, opts.rootRank, getSize());
   TORCH_CHECK(inputTensors.size() == 1, "Only single input tensor supported");
   ensureInitialized(inputTensors.at(0).device());
+  std::vector<at::Tensor> outputs;
   if (getRank() == opts.rootRank) {
-    TORCH_CHECK(outputTensors.size() == 1, "Only single output list on root");
-  } else if (outputTensors.empty()) {
-    outputTensors.emplace_back();
+    assertGatherOutputTensorList(invalidArgument, outputTensors, getSize());
+    assertTypeAndSizesMatch(
+        invalidArgument,
+        outputTensors[0],
+        inputTensors[0].options(),
+        inputTensors[0].sizes());
+    outputs = outputTensors[0];
   } else {
-    TORCH_CHECK(outputTensors.size() == 1, "Only single output list");
+    assertEmptyOutputTensorList(invalidArgument, outputTensors);
   }
   ++sequence_number_;
   auto work = gatherImpl(
-      outputTensors.at(0),
+      outputs,
       inputTensors.at(0),
       static_cast<int>(opts.rootRank),
       opts.asyncOp,
       operationTimeout(opts.timeout));
-  work->setOutputs(outputTensors.at(0));
+  work->setOutputs(std::move(outputs));
   return work;
 }
 
@@ -535,18 +554,29 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::scatter(
     std::vector<at::Tensor>& outputTensors,
     std::vector<std::vector<at::Tensor>>& inputTensors,
     const ::c10d::ScatterOptions& opts) {
+  static auto invalidArgument = [](const std::string& msg) {
+    C10_THROW_ERROR(ValueError, "ProcessGroupXCCL::scatter: " + msg);
+  };
+
+  assertRootRank(invalidArgument, opts.rootRank, getSize());
   TORCH_CHECK(outputTensors.size() == 1, "Only single output tensor supported");
   ensureInitialized(outputTensors.at(0).device());
+  std::vector<at::Tensor> inputs;
   if (getRank() == opts.rootRank) {
-    TORCH_CHECK(inputTensors.size() == 1, "Only single input list on root");
+    assertScatterInputTensorList(invalidArgument, inputTensors, getSize());
+    assertTypeAndSizesMatch(
+        invalidArgument,
+        inputTensors[0],
+        outputTensors[0].options(),
+        outputTensors[0].sizes());
+    inputs = inputTensors[0];
   } else {
-    inputTensors.clear();
-    inputTensors.emplace_back();
+    assertEmptyInputTensorList(invalidArgument, inputTensors);
   }
   ++sequence_number_;
   auto work = scatterImpl(
       outputTensors.at(0),
-      inputTensors.at(0),
+      inputs,
       static_cast<int>(opts.rootRank),
       opts.asyncOp,
       operationTimeout(opts.timeout));
@@ -604,6 +634,15 @@ c10::intrusive_ptr<::c10d::Work> ProcessGroupXCCL::_reduce_scatter_base(
     at::Tensor& outputBuffer,
     at::Tensor& inputBuffer,
     const ::c10d::ReduceScatterOptions& opts) {
+  if (inputBuffer.dtype() != outputBuffer.dtype()) {
+    C10_THROW_ERROR(
+        TypeError, "input tensor must be the same type as the output tensor.");
+  }
+  if (inputBuffer.numel() != outputBuffer.numel() * getSize()) {
+    C10_THROW_ERROR(
+        ValueError,
+        "input tensor must be the same size as output size times world size");
+  }
   ensureInitialized(outputBuffer.device());
   ++sequence_number_;
   auto work = reduceScatterSingleImpl(
