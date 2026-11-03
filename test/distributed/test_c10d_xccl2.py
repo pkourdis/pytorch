@@ -78,6 +78,58 @@ class ProcessGroupXCCL2Test(MultiProcContinuousTest):
         expected = float(sum(range(1, self.world_size + 1)))
         self.assertEqual(t, torch.full((10,), expected, device=self.device))
 
+    def _bool_reduce(
+        self, collective: str, t: torch.Tensor, op: dist.ReduceOp
+    ) -> torch.Tensor:
+        out = torch.empty_like(t)
+        if collective == "all_reduce":
+            dist.all_reduce(t, op=op)
+            return t
+        if collective == "reduce":
+            dist.reduce(t, dst=0, op=op)
+            return t
+        if collective == "reduce_scatter":
+            dist.reduce_scatter(out, [t] * self.world_size, op=op)
+            return out
+        dist.reduce_scatter_tensor(out, t.repeat(self.world_size), op=op)
+        return out
+
+    _BOOL_COLLECTIVES = (
+        "all_reduce",
+        "reduce",
+        "reduce_scatter",
+        "reduce_scatter_tensor",
+    )
+
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
+    def test_bool_sum_is_logical_or(self) -> None:
+        # oneCCL sees bool as uint8, so a plain SUM leaves per-rank counts in the
+        # bytes. Compare raw bytes: bool comparisons treat any nonzero as True.
+        expected = torch.tensor([1, 1, 0, 1], dtype=torch.uint8, device=self.device)
+        for collective in self._BOOL_COLLECTIVES:
+            # True on all ranks, rank 0 only, no rank, ranks 0 and 1.
+            bits = [True, self.rank == 0, False, self.rank < 2]
+            t = torch.tensor(bits, device=self.device)
+            out = self._bool_reduce(collective, t, dist.ReduceOp.SUM)
+            if collective != "reduce" or self.rank == 0:
+                self.assertEqual(out.view(torch.uint8), expected, msg=collective)
+
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
+    def test_bool_avg_raises_before_collective(self) -> None:
+        msg = "Cannot use ReduceOp.AVG with boolean inputs"
+        for collective in self._BOOL_COLLECTIVES:
+            t = torch.tensor([True, self.rank == 0], device=self.device)
+            before = t.view(torch.uint8).clone()
+            with self.assertRaisesRegex(TypeError, msg):
+                self._bool_reduce(collective, t, dist.ReduceOp.AVG)
+            # Rejected before the collective ran, so no summed bytes landed in t.
+            self.assertEqual(t.view(torch.uint8), before, msg=collective)
+        t = torch.ones(4, device=self.device)
+        dist.all_reduce(t)
+        self.assertEqual(t, torch.full_like(t, self.world_size))
+
     @requires_xccl()
     @skip_if_lt_x_gpu(2)
     def test_all_gather(self) -> None:
