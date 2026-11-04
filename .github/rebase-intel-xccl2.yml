@@ -1,0 +1,62 @@
+name: Rebase intel/xccl2 onto upstream
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "pytorch/pytorch ref to rebase onto"
+        default: main
+        required: true
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rebase:
+    if: github.repository == 'pkourdis/pytorch'
+    runs-on: ubuntu-24.04
+    env:
+      BRANCH: intel/xccl2
+      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          filter: blob:none
+          # GITHUB_TOKEN cannot push commits that touch .github/workflows, which
+          # upstream changes routinely do, so a PAT with `repo` + `workflow` scope is required.
+          token: ${{ secrets.REBASE_TOKEN_MADHU }}
+
+      - name: Rebase and push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/pytorch/pytorch.git
+          git fetch --filter=blob:none upstream "${UPSTREAM_REF}"
+
+          old_head=$(git rev-parse HEAD)
+          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+            echo "${BRANCH} already contains upstream/${UPSTREAM_REF}; nothing to do."
+            exit 0
+          fi
+
+          if ! git rebase FETCH_HEAD; then
+            git status
+            git diff --name-only --diff-filter=U
+            git rebase --abort
+            echo "::error::Rebase of ${BRANCH} onto upstream/${UPSTREAM_REF} hit conflicts; rebase manually."
+            exit 1
+          fi
+
+          git push --force-with-lease="${BRANCH}:${old_head}" origin "HEAD:${BRANCH}"
+          echo "Rebased ${BRANCH}: ${old_head} -> $(git rev-parse HEAD) onto $(git rev-parse FETCH_HEAD)" >> "$GITHUB_STEP_SUMMARY"
