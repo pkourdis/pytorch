@@ -20,7 +20,7 @@ permissions:
 jobs:
   rebase:
     if: github.repository == 'pkourdis/pytorch'
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     env:
       BRANCH: intel/xccl2
       UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
