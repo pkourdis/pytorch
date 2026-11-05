@@ -94,8 +94,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git remote add upstream https://github.com/pytorch/pytorch.git
-          git fetch --filter=blob:none upstream "${UPSTREAM_REF}"
+          git fetch --filter=blob:none https://github.com/pytorch/pytorch.git "${UPSTREAM_REF}"
           onto=$(git rev-parse FETCH_HEAD)
 
           old_head=$(git rev-parse HEAD)
