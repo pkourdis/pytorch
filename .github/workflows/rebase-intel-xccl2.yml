@@ -17,13 +17,21 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  BRANCH: intel/xccl2
+  REVIEW_BRANCH: intel/xccl2_resolved
+  UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+
 jobs:
   rebase:
     if: github.repository == 'pkourdis/pytorch'
     runs-on: self-hosted
+    outputs:
+      review_required: ${{ steps.rebase.outputs.review_required }}
+      old_head: ${{ steps.rebase.outputs.old_head }}
+      new_head: ${{ steps.rebase.outputs.new_head }}
     env:
-      BRANCH: intel/xccl2
-      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+      MAX_COPIES: 10
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -35,7 +43,52 @@ jobs:
           # upstream changes routinely do, so a PAT with `repo` + `workflow` scope is required.
           token: ${{ secrets.REBASE_TOKEN_MADHU }}
 
+      - name: Back up branch
+        run: |
+          set -euo pipefail
+          prefix="${BRANCH}_"
+          git fetch --prune origin "+refs/heads/${prefix}*:refs/remotes/origin/${prefix}*"
+          head=$(git rev-parse HEAD)
+
+          # Each rebase rewrites committer dates, so the tip's committer date tracks when a copy was taken.
+          list_copies() {
+            git for-each-ref --sort=committerdate --format='%(refname:lstrip=3)' "$@" "refs/remotes/origin/${prefix}*" | grep -E "^${prefix}[0-9]{2}(_[0-9]{2}){3}$" || true
+          }
+
+          existing=$(list_copies --points-at "${head}")
+          if [ -n "${existing}" ]; then
+            echo "Backup of ${head} already exists as ${existing}; not copying." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            name="${prefix}$(date -u +%m_%d_%H_%M)"
+            git push origin "${head}:refs/heads/${name}"
+            git update-ref "refs/remotes/origin/${name}" "${head}"
+            echo "Backed up ${BRANCH} (${head}) to \`${name}\`." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+          mapfile -t copies < <(list_copies)
+          excess=$(( ${#copies[@]} - MAX_COPIES ))
+          for (( i = 0; i < excess; i++ )); do
+            git push origin --delete "${copies[i]}"
+            echo "Deleted old backup \`${copies[i]}\`." | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Install Claude Code
+        run: |
+          set -euo pipefail
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v claude || curl -fsSL https://claude.ai/install.sh | bash
+          claude --version
+
       - name: Rebase and push
+        id: rebase
+        env:
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          AWS_REGION: us-east-2
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'us.anthropic.claude-opus-5-5' }}
+          MAX_CONFLICT_STOPS: 40
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -43,20 +96,149 @@ jobs:
 
           git remote add upstream https://github.com/pytorch/pytorch.git
           git fetch --filter=blob:none upstream "${UPSTREAM_REF}"
+          onto=$(git rev-parse FETCH_HEAD)
 
           old_head=$(git rev-parse HEAD)
-          if git merge-base --is-ancestor FETCH_HEAD HEAD; then
+          if git merge-base --is-ancestor "${onto}" HEAD; then
             echo "${BRANCH} already contains upstream/${UPSTREAM_REF}; nothing to do."
             exit 0
           fi
 
-          if ! git rebase FETCH_HEAD; then
-            git status
-            git diff --name-only --diff-filter=U
-            git rebase --abort
-            echo "::error::Rebase of ${BRANCH} onto upstream/${UPSTREAM_REF} hit conflicts; rebase manually."
+          fail() {
+            echo "::error::$1"
+            echo -e "\n**Rebase aborted:** $1" >> "$GITHUB_STEP_SUMMARY"
+            git rebase --abort || true
             exit 1
+          }
+
+          stops=0
+          git rebase "${onto}" || true
+          while [ -d "$(git rev-parse --git-path rebase-merge)" ]; do
+            stops=$((stops + 1))
+            [ "${stops}" -le "${MAX_CONFLICT_STOPS}" ] || fail "More than ${MAX_CONFLICT_STOPS} conflicting commits."
+
+            mapfile -t files < <(git diff --name-only --diff-filter=U)
+            [ "${#files[@]}" -gt 0 ] || fail "Rebase stopped without conflicts: $(git status --short | head -20)"
+
+            commit=$(git rev-parse REBASE_HEAD)
+            subject=$(git log -1 --format=%s "${commit}")
+            notes="${RUNNER_TEMP}/resolution_${stops}.md"
+            rm -f "${notes}"
+
+            echo "::group::Claude resolving conflicts in ${commit:0:11} ${subject}"
+            claude -p --model "${CLAUDE_MODEL}" \
+              --allowedTools "Read,Edit,Write,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git status:*),Bash(git rm:*)" \
+              <<EOF || fail "Claude failed while resolving ${commit:0:11}."
+          You are resolving merge conflicts in a CI job that rebases the ${BRANCH} branch of a PyTorch fork onto pytorch/pytorch ${UPSTREAM_REF} (${onto}).
+
+          The rebase stopped while replaying commit ${commit} ("${subject}") from ${BRANCH}.
+          Conflicted files:
+          $(printf -- '- %s\n' "${files[@]}")
+
+          During a rebase, the "HEAD"/ours side of each conflict is upstream (plus the ${BRANCH} commits already replayed), and the "theirs" side is commit ${commit}.
+          Use git log/show/diff to understand both sides: \`git show ${commit}\` shows what the commit intended, and \`git log ${old_head}..${onto} -- <file>\` shows the upstream changes that touched the file.
+
+          Resolve every conflict so the result keeps upstream's changes and also applies the intent of commit ${commit}.
+          If upstream already contains the change (for example the same PR has landed upstream), take the upstream version.
+          Remove all conflict markers. Only modify the conflicted files listed above. Do not stage files, commit, or run any rebase command.
+
+          When done, write a Markdown explanation to ${notes} (outside the repo). For each conflicted file give a "### <path>" heading, then explain what each side changed, how you merged it, and why. Be concrete and concise.
+          EOF
+            echo "::endgroup::"
+
+            if grep -lE '^(<<<<<<<|>>>>>>>)( |$)' -- "${files[@]}" 2>/dev/null; then
+              fail "Conflict markers remain after Claude resolution of ${commit:0:11}."
+            fi
+            git add -A -- "${files[@]}"
+            unexpected=$(git status --porcelain --untracked-files=all | grep -v '^[MADRC] ' || true)
+            [ -z "${unexpected}" ] || fail "Claude modified files outside the conflict set: ${unexpected}"
+
+            {
+              echo -e "\n## Conflict ${stops}: \`${commit:0:11}\` ${subject}\n"
+              if [ -s "${notes}" ]; then cat "${notes}"; else echo "_Claude did not write an explanation._"; fi
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            if git diff --cached --quiet; then
+              echo -e "\n_Commit became empty after resolution (already upstream); dropped._" >> "$GITHUB_STEP_SUMMARY"
+              git rebase --skip || true
+            else
+              GIT_EDITOR=true git rebase --continue || true
+            fi
+          done
+          git merge-base --is-ancestor "${onto}" HEAD || fail "Rebase did not complete onto ${onto}."
+
+          new_head=$(git rev-parse HEAD)
+          if [ "${stops}" -eq 0 ]; then
+            git push --force-with-lease="${BRANCH}:${old_head}" origin "HEAD:${BRANCH}"
+            echo -e "\nRebased ${BRANCH}: ${old_head} -> ${new_head} onto ${onto}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
 
-          git push --force-with-lease="${BRANCH}:${old_head}" origin "HEAD:${BRANCH}"
-          echo "Rebased ${BRANCH}: ${old_head} -> $(git rev-parse HEAD) onto $(git rev-parse FETCH_HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          # Claude-resolved rebases are left for human review instead of overwriting the branch.
+          git push --force origin "HEAD:refs/heads/${REVIEW_BRANCH}"
+          echo "::warning::Claude resolved ${stops} conflicting commits; review ${REVIEW_BRANCH} before updating ${BRANCH}."
+          printf 'review_required=true\nold_head=%s\nnew_head=%s\n' "${old_head}" "${new_head}" >> "$GITHUB_OUTPUT"
+          tee -a "$GITHUB_STEP_SUMMARY" > "${RUNNER_TEMP}/review.md" <<EOF
+
+          ## Review required
+          Claude resolved ${stops} conflicting commits. The result (${new_head}) was pushed to \`${REVIEW_BRANCH}\`; \`${BRANCH}\` is unchanged (${old_head}).
+
+          Review locally with:
+          \`\`\`
+          git fetch origin ${BRANCH} ${REVIEW_BRANCH}
+          git fetch https://github.com/pytorch/pytorch.git ${onto}
+          git range-diff ${onto} ${old_head} ${new_head}
+          \`\`\`
+          To accept, click "Review deployments" on the workflow run page and approve the \`xccl2-rebase-review\` environment; the accept job then pushes ${new_head} to \`${BRANCH}\`. Reject it to leave \`${BRANCH}\` unchanged.
+          EOF
+
+      - name: Email reviewers
+        if: steps.rebase.outputs.review_required == 'true'
+        env:
+          MAIL_FROM: pt_dist_val@intel.com
+          MAIL_TO: madhumitha.reddy.karri@intel.com panagiotis.kourdis@intel.com
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          msg="${RUNNER_TEMP}/review_email.txt"
+          {
+            echo "From: ${MAIL_FROM}"
+            echo "To: ${MAIL_TO// /, }"
+            echo "Subject: [review needed] Claude resolved rebase conflicts on ${BRANCH}"
+            echo "Content-Type: text/plain; charset=utf-8"
+            echo
+            echo "The scheduled rebase of ${BRANCH} onto pytorch/pytorch ${UPSTREAM_REF} hit conflicts that Claude resolved."
+            echo "Please review and approve or reject the push to ${BRANCH} on the workflow run page. Claude's explanation of each resolution is in the job summary:"
+            echo "${RUN_URL}"
+            cat "${RUNNER_TEMP}/review.md"
+          } > "${msg}"
+          rcpts=()
+          for r in ${MAIL_TO}; do rcpts+=(--mail-rcpt "${r}"); done
+          curl --silent --show-error --url smtp://smtp.intel.com:25 --mail-from "${MAIL_FROM}" "${rcpts[@]}" --upload-file "${msg}"
+          echo "Emailed ${MAIL_TO} asking for review." >> "$GITHUB_STEP_SUMMARY"
+
+  accept:
+    needs: rebase
+    if: needs.rebase.outputs.review_required == 'true'
+    runs-on: self-hosted
+    # The environment must have required reviewers configured, otherwise this job runs without approval.
+    environment: xccl2-rebase-review
+    env:
+      OLD_HEAD: ${{ needs.rebase.outputs.old_head }}
+      NEW_HEAD: ${{ needs.rebase.outputs.new_head }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.REVIEW_BRANCH }}
+          fetch-depth: 0
+          filter: blob:none
+          token: ${{ secrets.REBASE_TOKEN_MADHU }}
+
+      - name: Push reviewed commit
+        run: |
+          set -euo pipefail
+          git cat-file -e "${NEW_HEAD}^{commit}"
+          git push --force-with-lease="${BRANCH}:${OLD_HEAD}" origin "${NEW_HEAD}:refs/heads/${BRANCH}"
+          git push --force-with-lease="${REVIEW_BRANCH}:${NEW_HEAD}" origin --delete "${REVIEW_BRANCH}" || true
+          echo "Approved: pushed ${NEW_HEAD} to \`${BRANCH}\` (was ${OLD_HEAD})." >> "$GITHUB_STEP_SUMMARY"
