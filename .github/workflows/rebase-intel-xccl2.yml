@@ -89,6 +89,8 @@ jobs:
           AWS_REGION: us-east-2
           CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'us.anthropic.claude-opus-5-5' }}
           MAX_CONFLICT_STOPS: 40
+          # Per-diff cap; GitHub drops step summaries larger than 1 MiB.
+          MAX_DIFF_LINES: 150
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -110,6 +112,15 @@ jobs:
             exit 1
           }
 
+          diff_block() {
+            [ -s "$2" ] || return 0
+            local total; total=$(wc -l < "$2")
+            echo -e "\n<details><summary>$1</summary>\n\n~~~~diff"
+            head -n "${MAX_DIFF_LINES}" "$2"
+            [ "${total}" -le "${MAX_DIFF_LINES}" ] || echo "... truncated (${total} lines total)"
+            echo -e "~~~~\n</details>"
+          }
+
           stops=0
           git rebase "${onto}" || true
           while [ -d "$(git rev-parse --git-path rebase-merge)" ]; do
@@ -123,6 +134,9 @@ jobs:
             subject=$(git log -1 --format=%s "${commit}")
             notes="${RUNNER_TEMP}/resolution_${stops}.md"
             rm -f "${notes}"
+            conflict_diff="${RUNNER_TEMP}/conflict_${stops}.diff"
+            resolution_diff="${RUNNER_TEMP}/resolution_${stops}.diff"
+            git diff -- "${files[@]}" > "${conflict_diff}"
 
             echo "::group::Claude resolving conflicts in ${commit:0:11} ${subject}"
             claude -p --model "${CLAUDE_MODEL}" \
@@ -151,10 +165,13 @@ jobs:
             git add -A -- "${files[@]}"
             unexpected=$(git status --porcelain --untracked-files=all | grep -v '^[MADRC] ' || true)
             [ -z "${unexpected}" ] || fail "Claude modified files outside the conflict set: ${unexpected}"
+            git diff --cached HEAD -- "${files[@]}" > "${resolution_diff}"
 
             {
               echo -e "\n## Conflict ${stops}: \`${commit:0:11}\` ${subject}\n"
               if [ -s "${notes}" ]; then cat "${notes}"; else echo "_Claude did not write an explanation._"; fi
+              diff_block "Conflict (with markers, before resolution)" "${conflict_diff}"
+              diff_block "Resolution (diff against the upstream side)" "${resolution_diff}"
             } >> "$GITHUB_STEP_SUMMARY"
 
             if git diff --cached --quiet; then
