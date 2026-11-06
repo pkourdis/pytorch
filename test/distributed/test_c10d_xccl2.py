@@ -78,6 +78,18 @@ class ProcessGroupXCCL2Test(MultiProcContinuousTest):
         expected = float(sum(range(1, self.world_size + 1)))
         self.assertEqual(t, torch.full((10,), expected, device=self.device))
 
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
+    def test_gloo_subgroup(self) -> None:
+        self.assertIsNotNone(dist.group.WORLD.bound_device_id)
+        pg = dist.new_group(backend="gloo")
+        self.assertIsNone(pg.bound_device_id)
+        t = torch.ones(4)
+        dist.all_reduce(t, group=pg)
+        dist.barrier(group=pg)
+        self.assertEqual(t, torch.full((4,), float(self.world_size)))
+        dist.destroy_process_group(pg)
+
     def _bool_reduce(
         self, collective: str, t: torch.Tensor, op: dist.ReduceOp
     ) -> torch.Tensor:
