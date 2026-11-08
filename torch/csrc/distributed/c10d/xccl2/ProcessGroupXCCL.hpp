@@ -67,9 +67,11 @@ class XCCLException : public std::exception {
 #define XCCL_CHECK(xccl_api, call, err_str)            \
   do {                                                 \
     onecclResult_t status = call;                      \
-    if (status != onecclSuccess) {                     \
-      throw XCCLException(*xccl_api, err_str, status); \
-    }                                                  \
+    TORCH_CHECK(                                       \
+        status == onecclSuccess,                       \
+        err_str,                                       \
+        ": ",                                          \
+        xccl_api->getErrorString(status));             \
   } while (0)
 
 // Ignore variant for use in destructors - logs errors instead of throwing
@@ -223,6 +225,10 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   void abort() override;
   ::c10d::ErrorType getError() override;
   std::shared_ptr<c10::Allocator> getMemAllocator() override;
+
+  bool supportsAbortHooks() const override {
+    return true;
+  }
 
   void registerAbortHook(int64_t hook_id, ::c10d::AbortHook hook) override;
   void unregisterAbortHook(int64_t hook_id) override;
@@ -511,6 +517,7 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
 
   // Abort hooks (c10d::Backend API).
   std::unordered_map<int64_t, ::c10d::AbortHook> abortHooks_;
+  std::mutex abort_hooks_mutex_;
 
   // Active coalescing batch. Engaged between startCoalescing() and
   // endCoalescing(); send()/recv() append into it.
