@@ -53,8 +53,6 @@ onecclDataType_t getXcclDataTypeInternal(const at::Tensor& tensor) {
       return onecclInt8;
     case at::ScalarType::Byte:
     case at::ScalarType::Bool:
-    case at::ScalarType::Float8_e5m2:
-    case at::ScalarType::Float8_e4m3fn:
       return onecclUint8;
     default:
       // TODO: Add Float8 datatype handling
