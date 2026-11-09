@@ -14,8 +14,8 @@ import typing
 import weakref
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, cast, Literal, TYPE_CHECKING, TypeGuard, TypeVar, Union
-from typing_extensions import Self, TypedDict, Unpack
+from typing import Any, cast, Literal, Self, TYPE_CHECKING, TypeGuard, TypeVar, Union
+from typing_extensions import TypedDict, Unpack
 from weakref import ReferenceType
 
 import torch
@@ -476,9 +476,11 @@ def maybe_clear_fake_constant(x: object) -> None:
 
 
 def maybe_get_fake_dispatch_keys(x: object) -> torch.DispatchKeySet | None:
-    # The real tensor's dispatch keys recorded on a fake.
+    # The real tensor's dispatch keys recorded on a Python or C++ fake.
     if isinstance(x, FakeTensor):  # noqa: ISINSTANCE_FAKE_TENSOR
         return x.dispatch_keys
+    if isinstance(x, Tensor) and torch._C._is_fake_tensor(x):
+        return torch._C._get_fake_dispatch_keys(x)
     return None
 
 
@@ -1029,7 +1031,7 @@ class FakeTensorConverter:
         # NB: meta_converter set the memo
         return out
 
-    # If you specify the device, it MUST be a meta tensor.
+    # If you specify the device, it MUST be a meta tensor that is not fake.
     def from_meta_and_device(
         self,
         fake_mode: FakeTensorMode,
@@ -1041,6 +1043,13 @@ class FakeTensorConverter:
         if t.device.type != "meta":
             raise AssertionError(
                 f"tensor's device must be `meta`, got {t.device.type} instead"
+            )
+        # A fake also reports meta on the meta device or inside a kernel
+        if is_fake_tensor(t):
+            raise AssertionError(
+                "expected a plain meta tensor that is not fake; use an existing "
+                "fake directly, or make a new meta tensor outside the fake mode, "
+                "e.g. under torch._subclasses.fake_tensor.unset_fake_temporarily()"
             )
         # This is a bit abusive (this is not the "real" tensor) but whatever,
         # the meta tensor should be fresh so there's no way to get it wrong
@@ -1094,7 +1103,9 @@ def in_kernel_invocation_manager(
     if meta_in_tls != prev_in_kernel:
         raise AssertionError(f"{meta_in_tls}, {prev_in_kernel}")
 
-    with torch._C._DisableTorchDispatch():
+    # _InKernelInvocation makes C++ fakes report meta here too, see Note
+    # [C++ in_kernel_invocation].
+    with torch._C._DisableTorchDispatch(), torch._C._InKernelInvocation():
         fake_mode.in_kernel_invocation = True
         # Unfortunately _set_meta_in_tls_dispatch_include(False) can leave
         # `Dense` turned on (because it's implied by `Meta`)
