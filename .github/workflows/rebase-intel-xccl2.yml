@@ -153,6 +153,7 @@ jobs:
 
           Resolve every conflict so the result keeps upstream's changes and also applies the intent of commit ${commit}.
           If upstream already contains the change (for example the same PR has landed upstream), take the upstream version.
+          Do not drop comment lines. If one side rewrites a comment, use the rewritten version. Otherwise keep every comment from both sides, even if it looks redundant or outdated.
           Remove all conflict markers. Only modify the conflicted files listed above. Do not stage files, commit, or run any rebase command.
 
           When done, write a Markdown explanation to ${notes} (outside the repo). For each conflicted file give a "### <path>" heading, then explain what each side changed, how you merged it, and why. Be concrete and concise.
