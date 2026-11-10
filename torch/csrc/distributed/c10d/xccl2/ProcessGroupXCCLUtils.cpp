@@ -23,8 +23,7 @@ PreMulSumFactorT getPreMulSumFactor(const ::c10d::ReduceOp& op) {
       op.supplement_ != nullptr,
       "PREMUL_SUM operation requires a supplement, but none was provided");
   const auto* preMulSupplement =
-      dynamic_cast<const ::c10d::PreMulSumSupplement*>(
-          op.supplement_.get());
+      dynamic_cast<const ::c10d::PreMulSumSupplement*>(op.supplement_.get());
   TORCH_CHECK(
       preMulSupplement != nullptr,
       "PREMUL_SUM operation supplement must be of type PreMulSumSupplement");
@@ -189,7 +188,9 @@ ProcessGroupXCCL::RedOpRAII ProcessGroupXCCL::getXcclReduceOp(
 }
 
 void ProcessGroupXCCL::checkWorkQueue() {
-  WorkXCCL::WorkStatus status = workq_.garbageCollect();
+  std::vector<std::shared_ptr<WorkXCCL::State>> completed;
+  WorkXCCL::WorkStatus status = workq_.garbageCollect(completed);
+  runCompletionHooks(completed);
 
   switch (status) {
     case WorkXCCL::WorkStatus::TIMEDOUT:
