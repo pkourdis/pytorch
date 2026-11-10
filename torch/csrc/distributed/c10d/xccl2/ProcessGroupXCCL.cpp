@@ -442,6 +442,11 @@ void ProcessGroupXCCL::initXcclResources() {
   throw std::move(xcclException);
 }
 
+bool ProcessGroupXCCL::isInitialized() {
+  return init_state_ == InitializationState::INITIALIZED &&
+      xccl_comm_ != nullptr;
+}
+
 void ProcessGroupXCCL::abort() {
   abortXcclComm();
   comm_state_ = CommState::ERROR;
