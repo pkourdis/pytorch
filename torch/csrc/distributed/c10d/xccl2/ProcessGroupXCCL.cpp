@@ -197,23 +197,8 @@ ProcessGroupXCCL::~ProcessGroupXCCL() {
     // anything else so a concurrent allocator event cannot reach a dead object.
     detachMemoryHook();
 
-    shutdown_ = true;
-    {
-      std::lock_guard<std::mutex> lock(timeout_mutex_);
-      timeout_cv_.notify_all();
-    }
-
-    // Wait for timeout thread to finish. If we're being called from within
-    // the timeout thread itself (e.g., garbageCollect popped a work item whose
-    // destruction released the last reference to this backend), we must detach
-    // instead of join to avoid a deadlock.
-    if (timeout_thread_.joinable()) {
-      if (std::this_thread::get_id() != timeout_thread_.get_id()) {
-        timeout_thread_.join();
-      } else {
-        timeout_thread_.detach(); // NOLINT(facebook-hte-BadCall-detach)
-      }
-    }
+    // Stop the watchdog so it cannot access this object after destruction.
+    stopWatchdog();
 
     if (xccl_comm_) {
       if (xccl_api_) {
@@ -486,15 +471,8 @@ void ProcessGroupXCCL::finalize() {
   // pointer to this backend and can fire from an allocator thread.
   detachMemoryHook();
 
-  shutdown_ = true;
-  {
-    std::lock_guard<std::mutex> lock(timeout_mutex_);
-    timeout_cv_.notify_all();
-  }
-
-  if (timeout_thread_.joinable()) {
-    timeout_thread_.join();
-  }
+  // Stop the watchdog first
+  stopWatchdog();
 
   // Wait for all pending work objects to complete and get final status
   auto work_status = workq_.finalize();
@@ -557,6 +535,26 @@ void ProcessGroupXCCL::abortXcclComm() {
     TC_LOG(ERROR, this) << "Aborting process due to error or timeout";
     runAbortHooks();
     ::abort();
+  }
+}
+
+void ProcessGroupXCCL::stopWatchdog() {
+  shutdown_ = true;
+  {
+    std::lock_guard<std::mutex> lock(timeout_mutex_);
+    timeout_cv_.notify_all();
+  }
+
+  // Wait for timeout thread to finish. If we're being called from within
+  // the timeout thread itself (e.g., garbageCollect popped a work item whose
+  // destruction released the last reference to this backend), we must detach
+  // instead of join to avoid a deadlock.
+  if (timeout_thread_.joinable()) {
+    if (std::this_thread::get_id() != timeout_thread_.get_id()) {
+      timeout_thread_.join();
+    } else {
+      timeout_thread_.detach(); // NOLINT(facebook-hte-BadCall-detach)
+    }
   }
 }
 

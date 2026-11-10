@@ -282,6 +282,9 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   // drops xccl_comm_ without tearing it down, then aborts the process if
   // abort_process_on_timeout_or_error_ is set.
   void abortXcclComm();
+  // Signals the watchdog thread to exit and reaps it. Detaches instead of
+  // joining when called from the watchdog thread itself.
+  void stopWatchdog();
 
   enum class CommState {
     NORMAL,
