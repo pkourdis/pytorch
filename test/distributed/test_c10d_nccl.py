@@ -133,6 +133,7 @@ device_type = (
 device_module = torch.get_device_module(device_type)
 if device_type != "cuda":
     NCCL_BACKEND = dist.get_default_backend_for_device(device_type)
+FR_TRACE_BACKEND = "xccl-legacy" if device_type == "xpu" else NCCL_BACKEND
 BACKEND_ENV_PREFIX = ""
 FR_ENV_PREFIX = ""
 EVENT_CACHE_ENV = ""
@@ -6288,7 +6289,7 @@ class NCCLTraceTestBase(MultiProcessTestCase):
     def _create_process_group_nccl(self):
         store = dist.FileStore(self.file_name, self.world_size)
         c10d.init_process_group(
-            NCCL_BACKEND, world_size=self.world_size, rank=self.rank, store=store
+            FR_TRACE_BACKEND, world_size=self.world_size, rank=self.rank, store=store
         )
         pg = c10d.distributed_c10d._get_default_group()
         return pg
@@ -6309,7 +6310,7 @@ class NCCLTraceTestBase(MultiProcessTestCase):
     @property
     def rank_to_GPU(self):
         # return rank to GPU map
-        return init_multigpu_helper(self.world_size, NCCL_BACKEND)
+        return init_multigpu_helper(self.world_size, FR_TRACE_BACKEND)
 
     def _trace_basename(self):
         # we pass the base to the env, and the dump util will append rank
@@ -6455,11 +6456,7 @@ class NCCLTraceTest(NCCLTraceTestBase):
         f.wait()
         device_module.synchronize(device=device)
         pg._wait_for_pending_works()
-        t = pickle.loads(
-            torch._C._distributed_c10d._dump_nccl_trace(
-                includeCollectives=include_collectives
-            )
-        )
+        t = pickle.loads(_dump_fr_trace(includeCollectives=include_collectives))
         self._verify_trace(
             t,
             include_collectives=include_collectives,
@@ -6486,13 +6483,13 @@ class NCCLTraceTest(NCCLTraceTestBase):
         f.wait()
         device_module.synchronize(device=device)
         pg._wait_for_pending_works()
-        torch._C._distributed_c10d._reset_fr_recording_nccl()
+        _reset_fr_recording()
         for _ in range(4):
             f = pg.allreduce(a)
         f.wait()
         device_module.synchronize(device=device)
         pg._wait_for_pending_works()
-        t = pickle.loads(torch._C._distributed_c10d._dump_nccl_trace())
+        t = pickle.loads(_dump_fr_trace())
         self.assertEqual(len(t["entries"]), 4)
         dist.destroy_process_group()
 
@@ -7728,7 +7725,7 @@ class NCCLTraceTestDumpOnTimeoutBase(NCCLTraceTestBase):
     def _create_process_group_nccl(self):
         store = dist.FileStore(self.file_name, self.world_size)
         c10d.init_process_group(
-            NCCL_BACKEND,
+            FR_TRACE_BACKEND,
             world_size=self.world_size,
             rank=self.rank,
             store=store,
