@@ -104,6 +104,10 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
 
     bool is_high_priority_stream;
     std::unordered_map<std::string, std::string> hints;
+
+    c10::intrusive_ptr<::c10d::Backend::Options> clone() const override {
+      return c10::make_intrusive<Options>(*this);
+    }
   };
 
   // Communicator initialization happens when c10d binds the backend to a
@@ -241,6 +245,8 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   bool supportsSplitting() const override {
     return true;
   }
+
+  bool isInitialized() override;
 
   // Join a parent-wide split as a rank outside the new group.
   void performNocolorSplit(at::Device device);
