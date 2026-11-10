@@ -4,7 +4,15 @@
 
 namespace c10d::xccl2 {
 
-WorkXCCL::WorkStatus WorkXCCLQueue::garbageCollectLocked() {
+namespace {
+bool isFailure(WorkXCCL::WorkStatus status) {
+  return status == WorkXCCL::WorkStatus::TIMEDOUT ||
+      status == WorkXCCL::WorkStatus::ERROR;
+}
+} // namespace
+
+WorkXCCL::WorkStatus WorkXCCLQueue::garbageCollectLocked(
+    std::vector<std::shared_ptr<WorkXCCL::State>>& completed) {
   WorkXCCL::WorkStatus overall_status = WorkXCCL::WorkStatus::COMPLETED;
 
   // Keep popping completed elements until we hit an in-progress element
@@ -24,15 +32,18 @@ WorkXCCL::WorkStatus WorkXCCLQueue::garbageCollectLocked() {
         // Tensor references must be released by a caller thread, not by the
         // watchdog that runs garbageCollect(), so park the inputs here and let
         // the next enqueueWork() clear them. The state holds no tensors and is
-        // dropped here.
+        // handed to the caller for its completion hooks.
         completedInputTensors_.push(std::move(work.inputTensors));
+        completed.push_back(std::move(work.state));
         work_queue.pop();
         // Continue to the next element in the queue
-      } else if (
-          status == WorkXCCL::WorkStatus::TIMEDOUT ||
-          status == WorkXCCL::WorkStatus::ERROR) {
-        // Return the error status immediately
-        return status;
+      } else if (isFailure(status)) {
+        // Report the first failure, but keep draining the other streams so
+        // their completed work still reaches the completion hooks.
+        if (!isFailure(overall_status)) {
+          overall_status = status;
+        }
+        break;
       } else {
         // NOT_STARTED or INPROGRESS - stop processing this queue
         if (overall_status == WorkXCCL::WorkStatus::COMPLETED) {
@@ -57,9 +68,10 @@ WorkXCCL::WorkStatus WorkXCCLQueue::garbageCollectLocked() {
 // the main thread may be enqueuing work via enqueueWork(). The
 // work_queues_mutex_ ensures proper synchronization - both garbageCollect() and
 // enqueueWork() acquire the mutex before accessing stream_work_queues_.
-WorkXCCL::WorkStatus WorkXCCLQueue::garbageCollect() {
+WorkXCCL::WorkStatus WorkXCCLQueue::garbageCollect(
+    std::vector<std::shared_ptr<WorkXCCL::State>>& completed) {
   std::lock_guard<std::mutex> lock(work_queues_mutex_);
-  return garbageCollectLocked();
+  return garbageCollectLocked(completed);
 }
 
 // Must be called on a caller thread, without work_queues_mutex_ held.
@@ -75,7 +87,8 @@ void WorkXCCLQueue::clearCompletedInputTensors() {
   }
 }
 
-WorkXCCL::WorkStatus WorkXCCLQueue::finalize() {
+WorkXCCL::WorkStatus WorkXCCLQueue::finalize(
+    std::vector<std::shared_ptr<WorkXCCL::State>>& completed) {
   // Because this function is typically called after the timeout thread has
   // already joined, we might not need to lock here.  But doing the lock anyway,
   // as defensive programming, just in case someone moves the thread join order
@@ -88,7 +101,7 @@ WorkXCCL::WorkStatus WorkXCCLQueue::finalize() {
     // Initialize the status to COMPLETED to cover the case where the queue is
     // empty
     while (!stream_work_queues_.empty()) {
-      status = garbageCollectLocked();
+      status = garbageCollectLocked(completed);
       if (status == WorkXCCL::WorkStatus::ERROR ||
           status == WorkXCCL::WorkStatus::TIMEDOUT ||
           status == WorkXCCL::WorkStatus::COMPLETED) {
