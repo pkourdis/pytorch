@@ -445,6 +445,31 @@ class ProcessGroupXCCL2FlightRecorderTest(MultiProcessTestCase):
             self.assertGreater(e["duration_ms"], 0.0, msg=str(e))
             self.assertLess(e["duration_ms"], 60000.0, msg=str(e))
 
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
+    def test_coalesced_duration_covers_first_tensor(self) -> None:
+        device = torch.device("xpu", self.rank)
+        torch.xpu.set_device(device)
+        dist.init_process_group(
+            "xccl2",
+            world_size=self.world_size,
+            rank=self.rank,
+            store=dist.FileStore(self.file_name, self.world_size),
+            device_id=device,
+        )
+        pg = dist.group.WORLD
+        pg._enable_collectives_timing()
+        big = torch.ones(16 * 1024 * 1024, device=device)
+        small = torch.ones(1, device=device)
+        for _ in range(3):
+            single = pg.allreduce([big])
+            single.wait()
+            coalesced = pg.allreduce_coalesced([big, small])
+            coalesced.wait()
+        torch.xpu.synchronize()
+        self.assertGreater(coalesced._get_duration(), 0.5 * single._get_duration())
+        dist.destroy_process_group()
+
 
 class _ProcessGroupXCCL2OptionsTest(MultiProcContinuousTest):
     """Base for groups initialized with backend specific options."""
