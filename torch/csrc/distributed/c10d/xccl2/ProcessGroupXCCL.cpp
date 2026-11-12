@@ -480,7 +480,9 @@ void ProcessGroupXCCL::finalize() {
   stopWatchdog();
 
   // Wait for all pending work objects to complete and get final status
-  auto work_status = workq_.finalize();
+  std::vector<std::shared_ptr<WorkXCCL::State>> completed;
+  auto work_status = workq_.finalize(completed);
+  runCompletionHooks(completed);
 
   if (comm_state_ == CommState::ERROR) {
     throwAsyncError(true);

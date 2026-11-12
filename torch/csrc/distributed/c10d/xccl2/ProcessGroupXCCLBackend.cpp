@@ -193,8 +193,7 @@ void ProcessGroupXCCL::runAbortHooks() {
       hooks.push_back(hook);
     }
   }
-
-  for (const auto& [_, hook] : abortHooks_) {
+  for (const auto& hook : hooks) {
     try {
       hook();
     } catch (const std::exception& e) {
@@ -208,11 +207,68 @@ void ProcessGroupXCCL::runAbortHooks() {
 void ProcessGroupXCCL::registerAbortHook(
     int64_t hook_id,
     ::c10d::AbortHook hook) {
+  std::lock_guard<std::mutex> lock(abort_hooks_mutex_);
   abortHooks_.emplace(hook_id, std::move(hook));
 }
 
 void ProcessGroupXCCL::unregisterAbortHook(int64_t hook_id) {
+  std::lock_guard<std::mutex> lock(abort_hooks_mutex_);
   abortHooks_.erase(hook_id);
+}
+
+void ProcessGroupXCCL::runCompletionHooks(
+    const std::vector<std::shared_ptr<WorkXCCL::State>>& completed) {
+  if (completed.empty()) {
+    return;
+  }
+  std::vector<::c10d::CompletionHook> hooks;
+  {
+    std::lock_guard<std::mutex> lock(completion_hooks_mutex_);
+    if (completionHooks_.empty()) {
+      return;
+    }
+    hooks.reserve(completionHooks_.size());
+    for (const auto& [_, hook] : completionHooks_) {
+      hooks.push_back(hook);
+    }
+  }
+  for (const auto& state : completed) {
+    ::c10d::CompletionHookArgs args;
+    args.completionKey = state->completion_key;
+    if (state->timing_enabled) {
+      try {
+        args.duration_ms = state->getDuration();
+      } catch (const std::exception& e) {
+        TC_LOG(WARNING, this)
+            << "Cannot measure collective duration: " << e.what();
+      }
+    }
+    for (const auto& hook : hooks) {
+      try {
+        hook(args);
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "[TC] Completion hook threw exception: " << e.what();
+      } catch (...) {
+        LOG(ERROR) << "[TC] Completion hook threw unknown exception.";
+      }
+    }
+  }
+}
+
+void ProcessGroupXCCL::enableCollectivesTiming() {
+  event_pool_->enableTiming();
+}
+
+void ProcessGroupXCCL::registerCompletionHook(
+    int64_t hook_id,
+    ::c10d::CompletionHook hook) {
+  std::lock_guard<std::mutex> lock(completion_hooks_mutex_);
+  completionHooks_.emplace(hook_id, std::move(hook));
+}
+
+void ProcessGroupXCCL::unregisterCompletionHook(int64_t hook_id) {
+  std::lock_guard<std::mutex> lock(completion_hooks_mutex_);
+  completionHooks_.erase(hook_id);
 }
 
 void ProcessGroupXCCL::shutdown() {

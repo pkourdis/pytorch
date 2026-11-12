@@ -118,6 +118,9 @@ class WorkXCCL : public c10d::Work {
   uint64_t getSequencenumber() const override {
     return state_->seq;
   }
+  uint64_t getCompletionKey() const override {
+    return state_->completion_key;
+  }
 
   std::chrono::milliseconds getTimeout() const override {
     return state_->timeout_ms;
@@ -183,6 +186,7 @@ class WorkXCCL : public c10d::Work {
     // timeout, if set, overrides the work's own timeout.
     WorkStatus checkStatus(
         std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+    float getDuration() const;
 
     XcclCommInfo comm_info;
     std::weak_ptr<XcclEventPool> event_pool;
@@ -191,9 +195,13 @@ class WorkXCCL : public c10d::Work {
     bool timing_enabled{false};
     std::unique_ptr<at::xpu::XPUEvent> start_event;
     std::unique_ptr<at::xpu::XPUEvent> end_event;
+    // Set on a coalesced op so its duration starts at its first child.
+    mutable std::mutex duration_mutex;
+    std::shared_ptr<const State> duration_start;
     c10::xpu::XPUStream stream; // not owned by this class
     std::chrono::milliseconds timeout_ms;
     uint64_t seq{0};
+    const uint64_t completion_key;
     const std::chrono::steady_clock::time_point create_time;
 
     std::atomic<WorkStatus> status_{WorkStatus::NOT_STARTED};
@@ -237,16 +245,19 @@ class WorkXCCLQueue {
   WorkXCCLQueue() = default;
   ~WorkXCCLQueue() = default;
 
-  WorkXCCL::WorkStatus garbageCollect();
+  WorkXCCL::WorkStatus garbageCollect(
+      std::vector<std::shared_ptr<WorkXCCL::State>>& completed);
   // Finalize function can only be called from the main thread
-  WorkXCCL::WorkStatus finalize();
+  WorkXCCL::WorkStatus finalize(
+      std::vector<std::shared_ptr<WorkXCCL::State>>& completed);
   void enqueueWork(
       c10::intrusive_ptr<WorkXCCL> work,
       c10::xpu::XPUStream stream);
   bool empty();
 
  private:
-  WorkXCCL::WorkStatus garbageCollectLocked();
+  WorkXCCL::WorkStatus garbageCollectLocked(
+      std::vector<std::shared_ptr<WorkXCCL::State>>& completed);
   void clearCompletedInputTensors();
   std::unordered_map<c10::xpu::XPUStream, std::queue<WorkXCCL::TrackedWork>>
       stream_work_queues_;

@@ -225,6 +225,7 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   uint64_t getSequenceNumberForGroup() override {
     return sequence_number_;
   }
+  void enableCollectivesTiming() override;
   void shutdown() override;
   void abort() override;
   ::c10d::ErrorType getError() override;
@@ -236,6 +237,13 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
 
   void registerAbortHook(int64_t hook_id, ::c10d::AbortHook hook) override;
   void unregisterAbortHook(int64_t hook_id) override;
+
+  bool supportsCompletionHooks() const override {
+    return true;
+  }
+  void registerCompletionHook(int64_t hook_id, ::c10d::CompletionHook hook)
+      override;
+  void unregisterCompletionHook(int64_t hook_id) override;
 
   c10::intrusive_ptr<::c10d::Backend> split(
       const c10::intrusive_ptr<::c10d::Store>& store,
@@ -483,6 +491,8 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   void checkTensorDevice(const at::Tensor& tensor) const;
   void checkTensorsDevice(const std::vector<at::Tensor>& tensors) const;
   void runAbortHooks();
+  void runCompletionHooks(
+      const std::vector<std::shared_ptr<WorkXCCL::State>>& completed);
 
   // Member variables (port of TorchCommXCCL).
   onecclComm_t xccl_comm_{};
@@ -527,6 +537,9 @@ class TORCH_API ProcessGroupXCCL : public ::c10d::Backend {
   // Abort hooks (c10d::Backend API).
   std::unordered_map<int64_t, ::c10d::AbortHook> abortHooks_;
   std::mutex abort_hooks_mutex_;
+
+  std::unordered_map<int64_t, ::c10d::CompletionHook> completionHooks_;
+  std::mutex completion_hooks_mutex_;
 
   // Active coalescing batch. Engaged between startCoalescing() and
   // endCoalescing(); send()/recv() append into it.
