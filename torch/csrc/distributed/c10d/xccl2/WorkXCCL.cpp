@@ -140,6 +140,10 @@ WorkXCCL::~WorkXCCL() = default;
 
 void WorkXCCL::setChildren(
     const std::vector<c10::intrusive_ptr<WorkXCCL>>& children) {
+  if (!children.empty()) {
+    std::lock_guard<std::mutex> lock(state_->duration_mutex);
+    state_->duration_start = children.front()->state_;
+  }
   for (const auto& child : children) {
     inputTensors_->append(*child->inputTensors_);
   }
@@ -359,7 +363,14 @@ float WorkXCCL::State::getDuration() const {
   TORCH_CHECK(
       end_event->isCreated() && end_event->query(),
       "getDuration only works after the work has completed");
-  return static_cast<float>(start_event->elapsed_time(*end_event));
+  std::shared_ptr<const State> first;
+  {
+    std::lock_guard<std::mutex> lock(duration_mutex);
+    first = duration_start;
+  }
+  const auto& start =
+      first && first->timing_enabled ? *first->start_event : *start_event;
+  return static_cast<float>(start.elapsed_time(*end_event));
 }
 
 c10::intrusive_ptr<c10::ivalue::Future> WorkXCCL::getFuture() {

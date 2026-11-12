@@ -195,6 +195,9 @@ class WorkXCCL : public c10d::Work {
     bool timing_enabled{false};
     std::unique_ptr<at::xpu::XPUEvent> start_event;
     std::unique_ptr<at::xpu::XPUEvent> end_event;
+    // Set on a coalesced op so its duration starts at its first child.
+    mutable std::mutex duration_mutex;
+    std::shared_ptr<const State> duration_start;
     c10::xpu::XPUStream stream; // not owned by this class
     std::chrono::milliseconds timeout_ms;
     uint64_t seq{0};
