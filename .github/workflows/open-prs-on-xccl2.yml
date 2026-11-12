@@ -23,11 +23,17 @@ env:
   BASE_BRANCH: intel/xccl2
   TARGET_BRANCH: ${{ inputs.target_branch }}
   AUTHOR: ${{ inputs.author }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  REVIEW_ARTIFACT: open-prs-review
 
 jobs:
   apply:
     if: github.repository == 'pkourdis/pytorch'
     runs-on: self-hosted
+    outputs:
+      review_required: ${{ steps.apply.outputs.review_required }}
+      upstream_main: ${{ steps.apply.outputs.upstream_main }}
+      new_head: ${{ steps.apply.outputs.new_head }}
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -38,9 +44,25 @@ jobs:
           # GITHUB_TOKEN cannot push commits that touch .github/workflows, so a PAT with `repo` + `workflow` scope is required.
           token: ${{ secrets.REBASE_TOKEN_MADHU }}
 
+      - name: Install Claude Code
+        run: |
+          set -euo pipefail
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v claude || curl -fsSL https://claude.ai/install.sh | bash
+          claude --version
+
       - name: Apply PRs and push
+        id: apply
         env:
           GH_TOKEN: ${{ secrets.REBASE_TOKEN_MADHU }}
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
+          AWS_REGION: us-east-2
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'us.anthropic.claude-opus-5-5' }}
+          # Per-diff cap; GitHub drops step summaries larger than 1 MiB.
+          MAX_DIFF_LINES: 150
         run: |
           set -euo pipefail
           case "${TARGET_BRANCH}" in
@@ -59,29 +81,198 @@ jobs:
 
           git fetch --filter=blob:none "${upstream}" main
           upstream_main=$(git rev-parse FETCH_HEAD)
+          base_head=$(git rev-parse HEAD)
+
+          diff_block() {
+            [ -s "$2" ] || return 0
+            local total; total=$(wc -l < "$2")
+            echo -e "\n<details><summary>$1</summary>\n\n~~~~diff"
+            head -n "${MAX_DIFF_LINES}" "$2"
+            [ "${total}" -le "${MAX_DIFF_LINES}" ] || echo "... truncated (${total} lines total)"
+            echo -e "~~~~\n</details>"
+          }
+
+          # Resolves the conflicts `git apply --3way` left in "${files[@]}" and stages the result.
+          resolve() {
+            local notes="${RUNNER_TEMP}/resolution_${number}.md"
+            local conflict_diff="${RUNNER_TEMP}/conflict_${number}.diff"
+            local resolution_diff="${RUNNER_TEMP}/resolution_${number}.diff"
+            rm -f "${notes}"
+            git diff -- "${files[@]}" > "${conflict_diff}"
+
+            echo "::group::Claude resolving conflicts in #${number} ${title}"
+            claude -p --model "${CLAUDE_MODEL}" \
+              --allowedTools "Read,Edit,Write,Grep,Glob,Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git status:*),Bash(git rm:*)" \
+              <<EOF || { echo "::endgroup::"; reason="Claude failed"; return 1; }
+          You are resolving merge conflicts in a CI job that applies open pytorch/pytorch PRs, one at a time as squashed diffs, on top of the ${BASE_BRANCH} branch of a PyTorch fork.
+
+          Applying PR #${number} ("${title}", ${url}) with \`git apply --3way\` left conflicts in:
+          $(printf -- '- %s\n' "${files[@]}")
+
+          The "ours" side of each conflict is the current HEAD: ${BASE_BRANCH} (${base_head}) plus the PRs already applied before this one.
+          The "theirs" side is the PR's change. The PR's own diff is \`git diff ${base} ${head}\` (from its merge-base with upstream main), and \`git log ${base}..${head}\` shows its commits.
+          ${BASE_BRANCH} is not upstream main, so some conflicts come from ${BASE_BRANCH} changes the PR author never saw; \`git log ${base_head} -- <file>\` shows how ${BASE_BRANCH} changed a file.
+
+          Resolve every conflict so the result keeps everything on the "ours" side and also applies the intent of PR #${number}.
+          Apply only the PR's own changes; do not pull in unrelated upstream changes from the PR's base.
+          If HEAD already contains the PR's change, keep the HEAD version.
+          Do not drop comment lines. If one side rewrites a comment, use the rewritten version. Otherwise keep every comment from both sides, even if it looks redundant or outdated.
+          Remove all conflict markers. Only modify the conflicted files listed above. Do not stage files, commit, or run git apply, merge, or rebase.
+
+          When done, write a Markdown explanation to ${notes} (outside the repo). For each conflicted file give a "### <path>" heading, then explain what each side changed, how you merged it, and why. Be concrete and concise.
+          EOF
+            echo "::endgroup::"
+
+            if grep -lE '^(<<<<<<<|>>>>>>>)( |$)' -- "${files[@]}" 2>/dev/null; then
+              reason="conflict markers remain after Claude resolution"; return 1
+            fi
+            git add -A -- "${files[@]}"
+            local unexpected; unexpected=$(git status --porcelain --untracked-files=all | grep -v '^[MADRC] ' || true)
+            [ -z "${unexpected}" ] || { reason="Claude modified files outside the conflict set: ${unexpected}"; return 1; }
+            git diff --cached HEAD -- "${files[@]}" > "${resolution_diff}"
+
+            {
+              echo -e "\n### Claude resolution for #${number}\n"
+              if [ -s "${notes}" ]; then cat "${notes}"; else echo "_Claude did not write an explanation._"; fi
+              diff_block "Conflict (with markers, before resolution)" "${conflict_diff}"
+              diff_block "Resolution (diff against HEAD)" "${resolution_diff}"
+            } > "${RUNNER_TEMP}/resolution_summary_${number}.md"
+          }
 
           echo -e "## Open PRs by ${AUTHOR} applied onto \`${BASE_BRANCH}\` ($(git rev-parse --short HEAD))\n" >> "$GITHUB_STEP_SUMMARY"
+          resolutions="${RUNNER_TEMP}/resolutions.md"
+          : > "${resolutions}"
           failed=0
+          resolved=0
           while read -r number title; do
             url="https://github.com/pytorch/pytorch/pull/${number}"
             git fetch "${upstream}" "refs/pull/${number}/head"
             head=$(git rev-parse FETCH_HEAD)
             # PR branches may contain merges of main; diffing from the merge-base with main isolates the PR's own changes.
             base=$(git merge-base "${upstream_main}" "${head}")
-            if git diff --binary "${base}" "${head}" | git apply --3way --index; then
-              git commit --quiet --author="$(git log -1 --format='%an <%ae>' "${head}")" -m "${title}" -m "Pull Request: ${url}"
-              echo "- applied [#${number}](${url}) ${title}" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "::warning::#${number} does not apply cleanly; skipped."
-              {
-                echo "- **skipped** [#${number}](${url}) ${title}: conflicts in"
-                git diff --name-only --diff-filter=U | sed 's/^/  - `/; s/$/`/'
-              } >> "$GITHUB_STEP_SUMMARY"
-              git reset --quiet --hard HEAD
-              failed=$((failed + 1))
+            trailer=()
+            if ! git diff --binary "${base}" "${head}" | git apply --3way --index; then
+              mapfile -t files < <(git diff --name-only --diff-filter=U)
+              reason="patch does not apply (no 3-way conflicts to resolve)"
+              if [ "${#files[@]}" -eq 0 ] || ! resolve; then
+                echo "::warning::#${number} skipped: ${reason}."
+                {
+                  echo "- **skipped** [#${number}](${url}) ${title}: ${reason}"
+                  [ "${#files[@]}" -eq 0 ] || printf -- '  - `%s`\n' "${files[@]}"
+                } >> "$GITHUB_STEP_SUMMARY"
+                git reset --quiet --hard HEAD
+                git clean --quiet -fd
+                failed=$((failed + 1))
+                continue
+              fi
+              cat "${RUNNER_TEMP}/resolution_summary_${number}.md" >> "${resolutions}"
+              trailer=(-m "Conflicts with ${BASE_BRANCH} resolved by Claude (${CLAUDE_MODEL}): ${RUN_URL}")
+              resolved=$((resolved + 1))
             fi
+            if git diff --cached --quiet; then
+              echo "- **empty** [#${number}](${url}) ${title}: already in HEAD, no commit" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            git commit --quiet --author="$(git log -1 --format='%an <%ae>' "${head}")" -m "${title}" -m "Pull Request: ${url}" "${trailer[@]}"
+            note=""; [ "${#trailer[@]}" -eq 0 ] || note=" (**conflicts resolved by Claude**, see below)"
+            echo "- applied [#${number}](${url}) ${title}${note}" >> "$GITHUB_STEP_SUMMARY"
           done < "${RUNNER_TEMP}/prs.txt"
 
-          git push --force origin "HEAD:refs/heads/${TARGET_BRANCH}"
-          echo -e "\nPushed $(git rev-parse HEAD) to \`${TARGET_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
+          new_head=$(git rev-parse HEAD)
+          if [ "${resolved}" -eq 0 ]; then
+            git push --force origin "HEAD:refs/heads/${TARGET_BRANCH}"
+            echo -e "\nPushed ${new_head} to \`${TARGET_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Instead of pushing a review branch, hand the result to the accept job as a bundle artifact.
+            # Its prerequisites are reachable from upstream main, so the accept job only needs to fetch that.
+            mkdir -p "${RUNNER_TEMP}/review"
+            git bundle create "${RUNNER_TEMP}/review/review.bundle" "${upstream_main}..HEAD"
+            echo "::warning::Claude resolved conflicts in ${resolved} PR(s); ${TARGET_BRANCH} is not updated until the result is approved."
+            printf 'review_required=true\nupstream_main=%s\nnew_head=%s\n' "${upstream_main}" "${new_head}" >> "$GITHUB_OUTPUT"
+            tee -a "$GITHUB_STEP_SUMMARY" > "${RUNNER_TEMP}/review.md" <<EOF
+
+          ## Review required
+          Claude resolved conflicts in ${resolved} PR(s). The result (${new_head}) was **not** pushed; \`${TARGET_BRANCH}\` is unchanged.
+
+          Review locally with:
+          \`\`\`
+          gh run download ${GITHUB_RUN_ID} -R ${GITHUB_REPOSITORY} -n ${REVIEW_ARTIFACT}
+          git fetch https://github.com/pytorch/pytorch.git ${upstream_main}
+          git fetch review.bundle ${new_head}
+          git log -p ${base_head}..${new_head}
+          \`\`\`
+          Commits with resolved conflicts carry a "resolved by Claude" trailer.
+          To accept, click "Review deployments" on the workflow run page and approve the \`xccl2-rebase-review\` environment; the accept job then pushes ${new_head} to \`${TARGET_BRANCH}\`. Reject it to leave \`${TARGET_BRANCH}\` unchanged.
+          EOF
+            echo -e "\n## Claude conflict resolutions" >> "$GITHUB_STEP_SUMMARY"
+            cat "${resolutions}" >> "$GITHUB_STEP_SUMMARY"
+          fi
           [ "${failed}" -eq 0 ] || { echo "::error::${failed} PR(s) were skipped due to conflicts."; exit 1; }
+
+      # Skipped PRs fail the apply step, but a partial result with Claude resolutions still goes to review.
+      - name: Upload result for review
+        if: ${{ !cancelled() && steps.apply.outputs.review_required == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.REVIEW_ARTIFACT }}
+          path: ${{ runner.temp }}/review/review.bundle
+          if-no-files-found: error
+
+      - name: Email reviewers
+        if: ${{ !cancelled() && steps.apply.outputs.review_required == 'true' }}
+        env:
+          MAIL_FROM: pt_dist_val@intel.com
+          MAIL_TO: madhumitha.reddy.karri@intel.com panagiotis.kourdis@intel.com
+        run: |
+          set -euo pipefail
+          msg="${RUNNER_TEMP}/review_email.txt"
+          {
+            echo "From: ${MAIL_FROM}"
+            echo "To: ${MAIL_TO// /, }"
+            echo "Subject: [review needed] Claude resolved conflicts applying ${AUTHOR}'s open PRs onto ${BASE_BRANCH}"
+            echo "Content-Type: text/plain; charset=utf-8"
+            echo
+            echo "Applying ${AUTHOR}'s open pytorch/pytorch PRs onto ${BASE_BRANCH} hit conflicts that Claude resolved."
+            echo "Please review and approve or reject the push to ${TARGET_BRANCH} on the workflow run page. Claude's explanation of each resolution is in the job summary:"
+            echo "${RUN_URL}"
+            cat "${RUNNER_TEMP}/review.md"
+          } > "${msg}"
+          rcpts=()
+          for r in ${MAIL_TO}; do rcpts+=(--mail-rcpt "${r}"); done
+          curl --silent --show-error --url smtp://smtp.intel.com:25 --mail-from "${MAIL_FROM}" "${rcpts[@]}" --upload-file "${msg}"
+          echo "Emailed ${MAIL_TO} asking for review." >> "$GITHUB_STEP_SUMMARY"
+
+  accept:
+    needs: apply
+    if: ${{ !cancelled() && needs.apply.outputs.review_required == 'true' }}
+    runs-on: self-hosted
+    # The environment must have required reviewers configured, otherwise this job runs without approval.
+    environment: xccl2-rebase-review
+    env:
+      UPSTREAM_MAIN: ${{ needs.apply.outputs.upstream_main }}
+      NEW_HEAD: ${{ needs.apply.outputs.new_head }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          filter: blob:none
+          token: ${{ secrets.REBASE_TOKEN_MADHU }}
+
+      - name: Download result
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ env.REVIEW_ARTIFACT }}
+          path: ${{ runner.temp }}/review
+
+      - name: Push reviewed commit
+        run: |
+          set -euo pipefail
+          case "${TARGET_BRANCH}" in
+            "${BASE_BRANCH}"|main) echo "::error::Refusing to overwrite ${TARGET_BRANCH}."; exit 1 ;;
+          esac
+          git fetch --filter=blob:none https://github.com/pytorch/pytorch.git "${UPSTREAM_MAIN}"
+          git fetch "${RUNNER_TEMP}/review/review.bundle" "${NEW_HEAD}"
+          git push --force origin "${NEW_HEAD}:refs/heads/${TARGET_BRANCH}"
+          echo "Approved: pushed ${NEW_HEAD} to \`${TARGET_BRANCH}\`." >> "$GITHUB_STEP_SUMMARY"
