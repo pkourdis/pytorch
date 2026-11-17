@@ -295,9 +295,7 @@ void ProcessGroupXCCL::checkAndAbortIfTimedOutOrError() {
     // abort_process_on_timeout_or_error_ is false the caller gets an exception
     // while peers may still be blocked in the collective.
     if (abort_process_on_timeout_or_error_) {
-      TC_LOG(ERROR, this) << "Aborting process due to timeout";
-      runAbortHooks();
-      ::abort();
+      abortProcess("timeout");
     } else {
       TORCH_CHECK(false, "XCCL operation timed out");
     }
