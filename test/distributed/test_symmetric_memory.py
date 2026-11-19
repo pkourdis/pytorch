@@ -190,9 +190,6 @@ class SymmetricMemoryTest(MultiProcContinuousTest):
         self.assertFalse(_SymmetricMemory.has_multicast_support(DeviceType.CPU, 0))
         # NOTE: DeviceType.CUDA is implicitly tested through @requires_multicast_support
 
-    @skipIfXpu(
-        msg="XPUSymmetricMemoryAllocator does not override has_allocation: https://github.com/intel/torch-xpu-ops/issues/5404"
-    )
     @requires_accelerator
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
@@ -3829,9 +3826,6 @@ class LoweringTest(MultiProcContinuousTest):
             msg="Compiled and eager do not match",
         )
 
-    @skipIfXpu(
-        msg="is_symm_mem_tensor is always False on XPU (has_allocation not overridden): https://github.com/intel/torch-xpu-ops/issues/5404"
-    )
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
     )
@@ -4201,7 +4195,7 @@ class SymmMemPoolTest(MultiProcContinuousTest):
         torch.manual_seed(42 + self.rank)
 
     @skipIfXpu(
-        msg="SymmetricMemory MemPool has no XPU backend: https://github.com/intel/torch-xpu-ops/issues/5404"
+        msg="symm_mem::one_shot_all_reduce is not implemented for XPU: https://github.com/intel/torch-xpu-ops/issues/6000"
     )
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
@@ -4234,7 +4228,7 @@ class SymmMemPoolTest(MultiProcContinuousTest):
         self.assertEqual(tensor, expected)
 
     @skipIfXpu(
-        msg="SymmetricMemory MemPool has no XPU backend: https://github.com/intel/torch-xpu-ops/issues/5404"
+        msg="symm_mem::one_shot_all_reduce is not implemented for XPU: https://github.com/intel/torch-xpu-ops/issues/6000"
     )
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
@@ -4275,9 +4269,6 @@ class SymmMemPoolTest(MultiProcContinuousTest):
         hdl.barrier(timeout_ms=60000)
         return t, hdl
 
-    @skipIfXpu(
-        msg="SymmetricMemory MemPool has no XPU backend: https://github.com/intel/torch-xpu-ops/issues/5404"
-    )
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
     )
@@ -4306,9 +4297,6 @@ class SymmMemPoolTest(MultiProcContinuousTest):
         t2, hdl2 = self._mempool_barrier_roundtrip(mempool, numel, dtype, group_name)
         del hdl2, t2
 
-    @skipIfXpu(
-        msg="SymmetricMemory MemPool has no XPU backend: https://github.com/intel/torch-xpu-ops/issues/5404"
-    )
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
     )
@@ -4329,9 +4317,6 @@ class SymmMemPoolTest(MultiProcContinuousTest):
         numel, dtype = 4 * 1024 * 1024, torch.float
         self._mempool_barrier_roundtrip(mempool, numel, dtype, group_name)
 
-    @skipIfXpu(
-        msg="SymmetricMemory MemPool has no XPU backend: https://github.com/intel/torch-xpu-ops/issues/5404"
-    )
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
     )
