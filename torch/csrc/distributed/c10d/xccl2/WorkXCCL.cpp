@@ -63,6 +63,8 @@ bool XcclEventPool::timingEnabled() const {
 
 namespace {
 
+std::atomic<uint64_t> nextCompletionKey{1};
+
 XcclCommInfo makeCommInfo(ProcessGroupXCCL* comm) {
   return XcclCommInfo{
       std::string(comm->getCommName()),
@@ -98,6 +100,7 @@ WorkXCCL::State::State(
       event_pool(comm->getEventPool()),
       stream(stream),
       timeout_ms(timeout_ms),
+      completion_key(nextCompletionKey.fetch_add(1, std::memory_order_relaxed)),
       create_time(std::chrono::steady_clock::now()) {
   const auto& pool = comm->getEventPool();
   timing_enabled = pool->timingEnabled();
@@ -137,6 +140,10 @@ WorkXCCL::~WorkXCCL() = default;
 
 void WorkXCCL::setChildren(
     const std::vector<c10::intrusive_ptr<WorkXCCL>>& children) {
+  if (!children.empty()) {
+    std::lock_guard<std::mutex> lock(state_->duration_mutex);
+    state_->duration_start = children.front()->state_;
+  }
   for (const auto& child : children) {
     inputTensors_->append(*child->inputTensors_);
   }
@@ -344,16 +351,26 @@ std::vector<at::Tensor> WorkXCCL::result() {
 }
 
 float WorkXCCL::getDuration() const {
+  return state_->getDuration();
+}
+
+float WorkXCCL::State::getDuration() const {
   TORCH_CHECK(
-      state_->timing_enabled,
+      timing_enabled,
       "getDuration only works if timing was enabled, see ProcessGroup::_enable_collectives_timing");
   // XPUEvent::elapsed_time() blocks until both events complete, so require
   // completion up front rather than stalling the caller.
   TORCH_CHECK(
-      state_->end_event->isCreated() && state_->end_event->query(),
+      end_event->isCreated() && end_event->query(),
       "getDuration only works after the work has completed");
-  return static_cast<float>(
-      state_->start_event->elapsed_time(*state_->end_event));
+  std::shared_ptr<const State> first;
+  {
+    std::lock_guard<std::mutex> lock(duration_mutex);
+    first = duration_start;
+  }
+  const auto& start =
+      first && first->timing_enabled ? *first->start_event : *start_event;
+  return static_cast<float>(start.elapsed_time(*end_event));
 }
 
 c10::intrusive_ptr<c10::ivalue::Future> WorkXCCL::getFuture() {

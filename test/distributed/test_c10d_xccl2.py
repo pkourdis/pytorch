@@ -3,6 +3,7 @@
 # Tests specific to the in-tree xccl2 backend.
 
 import gc
+import json
 import os
 import subprocess
 import sys
@@ -376,6 +377,98 @@ class ProcessGroupXCCL2WorkLifetimeTest(MultiProcessTestCase):
         dist.destroy_process_group()
         del work
         gc.collect()
+
+
+class ProcessGroupXCCL2FlightRecorderTest(MultiProcessTestCase):
+    hw_classification = HardwareClassification.XPU
+
+    @property
+    def world_size(self) -> int:
+        return 2
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._spawn_processes()
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        try:
+            os.remove(self.file_name)
+        except OSError:
+            pass
+
+    def _run_all_reduces(self, timing: bool) -> list[dict]:
+        device = torch.device("xpu", self.rank)
+        torch.xpu.set_device(device)
+        dist.init_process_group(
+            "xccl2",
+            world_size=self.world_size,
+            rank=self.rank,
+            store=dist.FileStore(self.file_name, self.world_size),
+            device_id=device,
+        )
+        pg = dist.group.WORLD
+        if timing:
+            pg._enable_collectives_timing()
+        self.assertTrue(pg._get_backend(device).supports_completion_hooks)
+
+        t = torch.ones(1024, device=device)
+        for _ in range(3):
+            dist.all_reduce(t)
+        torch.xpu.synchronize()
+
+        deadline = time.monotonic() + 60
+        while True:
+            trace = torch._C._distributed_c10d._dump_fr_trace_json(backend="xccl2")
+            entries = json.loads(trace).get("entries", [])
+            if len(entries) >= 3 and all(e["retired"] for e in entries):
+                break
+            if time.monotonic() >= deadline:
+                self.fail(f"collectives were not retired: {entries}")
+            time.sleep(0.05)
+        dist.destroy_process_group()
+        return entries
+
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
+    def test_completion_pushed_to_flight_recorder(self) -> None:
+        for e in self._run_all_reduces(timing=False):
+            self.assertEqual(e["state"], "completed", msg=str(e))
+            self.assertNotEqual(e["time_discovered_completed_ns"], 0, msg=str(e))
+            self.assertNotIn("duration_ms", e, msg=str(e))
+
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
+    def test_flight_recorder_duration_with_timing(self) -> None:
+        for e in self._run_all_reduces(timing=True):
+            self.assertEqual(e["state"], "completed", msg=str(e))
+            self.assertGreater(e["duration_ms"], 0.0, msg=str(e))
+            self.assertLess(e["duration_ms"], 60000.0, msg=str(e))
+
+    @requires_xccl()
+    @skip_if_lt_x_gpu(2)
+    def test_coalesced_duration_covers_first_tensor(self) -> None:
+        device = torch.device("xpu", self.rank)
+        torch.xpu.set_device(device)
+        dist.init_process_group(
+            "xccl2",
+            world_size=self.world_size,
+            rank=self.rank,
+            store=dist.FileStore(self.file_name, self.world_size),
+            device_id=device,
+        )
+        pg = dist.group.WORLD
+        pg._enable_collectives_timing()
+        big = torch.ones(16 * 1024 * 1024, device=device)
+        small = torch.ones(1, device=device)
+        for _ in range(3):
+            single = pg.allreduce([big])
+            single.wait()
+            coalesced = pg.allreduce_coalesced([big, small])
+            coalesced.wait()
+        torch.xpu.synchronize()
+        self.assertGreater(coalesced._get_duration(), 0.5 * single._get_duration())
+        dist.destroy_process_group()
 
 
 class _ProcessGroupXCCL2OptionsTest(MultiProcContinuousTest):

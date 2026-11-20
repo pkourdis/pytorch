@@ -200,7 +200,9 @@ ProcessGroupXCCL::RedOpRAII ProcessGroupXCCL::getXcclReduceOp(
 }
 
 void ProcessGroupXCCL::checkWorkQueue() {
-  WorkXCCL::WorkStatus status = workq_.garbageCollect();
+  std::vector<std::shared_ptr<WorkXCCL::State>> completed;
+  WorkXCCL::WorkStatus status = workq_.garbageCollect(completed);
+  runCompletionHooks(completed);
 
   switch (status) {
     case WorkXCCL::WorkStatus::TIMEDOUT:
